@@ -490,8 +490,8 @@ def interface():
         def _relatorio(self):
             app = self.app
             est = n.com_anterior(app.base, [self.lid], app.est.a, app.est.b)
-            html = relatorio.gerar(est, app.base, app.grupo, ["sobre", "resumo", "graficos", "por_ano", "orientacoes", "projetos", "veiculos", "itens"],
-                                   ficha=self.fx)
+            html = app._ocupado("Gerando o relatório individual", relatorio.gerar, est, app.base, app.grupo,
+                                ["sobre", "resumo", "graficos", "por_ano", "orientacoes", "projetos", "veiculos", "itens"], ficha=self.fx)
             nome = re.sub(r"[^\w\- ]+", "", f"{self.fx['nome']} {app.est.a}-{app.est.b}").strip()
             caminho = os.path.join(app._pasta_rel(), f"Relatório individual {nome} ({datetime.datetime.now():%Y-%m-%d %Hh%M}).html")
             with open(caminho, "w", encoding="utf-8") as f:
@@ -664,6 +664,7 @@ def interface():
             e.pack(side="left")
             e.bind("<Return>", lambda ev: self._buscar())
             ttk.Button(barra, text="Buscar", style="Acento.TButton", command=self._buscar).pack(side="left", padx=8)
+            self.pb = ttk.Progressbar(barra, mode="indeterminate", length=app.px(140))
             self.lb = tk.Label(barra, text="", font=(FONTE, 9), bg=CARTAO, fg=MUDO)
             self.lb.pack(side="left", padx=8)
             self.t = Tabela(self)
@@ -687,7 +688,10 @@ def interface():
             nome = self.v_nome.get().strip()
             if not nome:
                 return
-            self.lb.configure(text="Buscando…")
+            self.lb.configure(text="Buscando no OpenAlex…")
+            self.pb.pack(side="left", before=self.lb)
+            self.pb.start(12)
+            self.configure(cursor="watch")
             self.update_idletasks()
             chave = self.app.pref.get("openalex_chave") or None
 
@@ -702,6 +706,9 @@ def interface():
         def _resultado(self, r, erro):
             if not self.winfo_exists():
                 return
+            self.pb.stop()
+            self.pb.pack_forget()
+            self.configure(cursor="")
             if erro:
                 self.lb.configure(text=f"Não deu para buscar: {erro}")
                 return
@@ -814,6 +821,42 @@ def interface():
         def px(self, v):
             return int(v * self.esc)
 
+        # ------------------------------------------------------- carregando
+        def _faixa(self, texto, k=None, total=None):
+            """Mostra a faixa de progresso: sem k/total, barra animada; com, barra de etapas."""
+            if not self.faixa.winfo_ismapped():
+                self.faixa.pack(fill="x", after=self._topo)
+            self.lb_faixa.configure(text=texto)
+            if k is None:
+                if str(self.pb_faixa["mode"]) != "indeterminate":
+                    self.pb_faixa.configure(mode="indeterminate", value=0)
+                self.pb_faixa.start(12)
+            else:
+                self.pb_faixa.stop()
+                self.pb_faixa.configure(mode="determinate", maximum=max(total, 1), value=k)
+
+        def _faixa_fim(self):
+            self.pb_faixa.stop()
+            self.faixa.pack_forget()
+
+        def _ocupado(self, texto, fn, *a, **kw):
+            """Operacao que trava a janela por um instante: cursor de espera e a faixa com o que acontece."""
+            self._n_ocupado += 1
+            if self._n_ocupado == 1:
+                self._faixa(texto + "…")
+                self.configure(cursor="watch")
+                self.update_idletasks()
+            try:
+                return fn(*a, **kw)
+            finally:
+                self._n_ocupado -= 1
+                if self._n_ocupado == 0:
+                    self.configure(cursor="")
+                    if self.tarefa:
+                        self._faixa(self._txt_tarefa)
+                    else:
+                        self._faixa_fim()
+
         def _fonte_do_sistema(self):
             familias = set(tkfont.families(self))
             for f in {"Windows": ["Segoe UI"], "Darwin": ["SF Pro Text", "Helvetica Neue", "Helvetica"]}.get(SISTEMA, []) + \
@@ -913,6 +956,17 @@ def interface():
         def _montar(self):
             topo = ttk.Frame(self, style="Marinho.TFrame", padding=(20, 10, 20, 10))
             topo.pack(fill="x")
+            self._topo = topo
+            # Faixa de "carregando": aparece em qualquer aba enquanto algo roda
+            self.faixa = tk.Frame(self, bg="#E4EEFB", padx=20, pady=7)
+            self.pb_faixa = ttk.Progressbar(self.faixa, mode="indeterminate", length=self.px(220))
+            self.pb_faixa.pack(side="left")
+            self.lb_faixa = tk.Label(self.faixa, text="", bg="#E4EEFB", fg=MARINHO, font=(FONTE, 10, "bold"))
+            self.lb_faixa.pack(side="left", padx=12)
+            lk = tk.Label(self.faixa, text="Ver detalhes", bg="#E4EEFB", fg=ACENTO, font=(FONTE, 9, "underline"), cursor="hand2")
+            lk.pack(side="right")
+            lk.bind("<Button-1>", lambda e: self.nb.select(self.abas["membros"]))
+            self._txt_tarefa, self._n_ocupado = "", 0
             if self._img(40, True):
                 ttk.Label(topo, image=self._img(40, True), style="Topo.TLabel").pack(side="left", padx=(0, 12))
             nomes = ttk.Frame(topo, style="Marinho.TFrame")
@@ -1220,7 +1274,8 @@ def interface():
 
         def _ficha(self, lid):
             if self.est:
-                Ficha(self, lid)
+                nome = (self.base.pessoas.get(lid) or {}).get("nome", "")
+                self._ocupado("Abrindo a página de " + nome, Ficha, self, lid)
 
         def _dialogo_adicionar(self):
             if not self.grupo:
@@ -1532,6 +1587,9 @@ def interface():
                 self._listar_grupos(self.grupo)
 
         def _abrir_grupo(self, g):
+            self._ocupado("Carregando o grupo " + (g.nome if g else ""), self._abrir_grupo_ja, g)
+
+        def _abrir_grupo_ja(self, g):
             self.grupo = g
             if g:
                 self.pref["grupo"] = os.path.basename(g.pasta)
@@ -1790,9 +1848,12 @@ def interface():
                 self.tarefa = None
                 self._fotos.clear()
                 self._botoes_tarefa(True)
-                self._carregar_base()
+                self._ocupado("Carregando os dados novos", self._carregar_base)
                 return
             etapa = self.etapas.pop(0)
+            self._txt_tarefa = {"baixar": "Baixando os currículos…", "faltam": "Baixando os currículos novos…",
+                                "gerar": "Processando os currículos com o scriptLattes…"}[etapa]
+            self._faixa(self._txt_tarefa)
             args = {"baixar": ["--baixar"], "faltam": ["--baixar", "--faltam"], "gerar": ["--gerar"]}[etapa]
             exe = sys.executable
             if exe.lower().endswith("pythonw.exe") and os.path.exists(exe[:-5] + ".exe"):
@@ -1832,6 +1893,13 @@ def interface():
                         _, _, k, total, txt = x.split(" ", 4)
                         if self.pb["mode"] == "determinate":
                             self.pb.configure(maximum=max(int(total), 1), value=int(k))
+                            self._txt_tarefa = f"{txt} ({min(int(k) + 1, int(total))}/{total})…" if int(k) < int(total) else txt
+                            if not self._n_ocupado:
+                                self._faixa(self._txt_tarefa, int(k), int(total))
+                        else:
+                            self._txt_tarefa = txt
+                            if not self._n_ocupado:
+                                self._faixa(txt)
                         self.lb_prog.configure(text=txt)
                     elif x.startswith("@@ fim "):
                         _, _, estado, txt = x.split(" ", 3)
@@ -1904,6 +1972,9 @@ def interface():
 
         # ----------------------------------------------------- calculo
         def _recalcular(self):
+            self._ocupado("Calculando as estatísticas", self._recalcular_ja)
+
+        def _recalcular_ja(self):
             self._agendado = None
             g, base = self.grupo, self.base
             per = self._periodo() if base else None
@@ -2071,6 +2142,9 @@ def interface():
             self.g_principal.mostrar(spec)
 
         def _painel(self, secao):
+            self._ocupado("Montando os gráficos de " + secao, self._painel_ja, secao)
+
+        def _painel_ja(self, secao):
             self._graf_sel = None
             self._dir_graf.pack_forget()
             self.painel.pack(side="left", fill="both", expand=True, padx=(20, 0))
@@ -2162,6 +2236,9 @@ def interface():
             return self.grupo.relatorios
 
         def _gerar_relatorio(self):
+            self._ocupado("Gerando o relatório", self._gerar_relatorio_ja)
+
+        def _gerar_relatorio_ja(self):
             if not self.est:
                 return
             secoes = [k for k, v in self.v_secoes.items() if v.get()]
@@ -2242,7 +2319,7 @@ def interface():
                     ("Itens",) + n.tabela_itens(est, base),
                     ("Texto", ["Texto para relatório"], [[p] for p in n.texto_relatorio(est, g, base).split("\n\n")])]
             try:
-                n.salvar_excel(caminho, abas)
+                self._ocupado("Gerando a planilha", n.salvar_excel, caminho, abas)
             except ImportError:
                 messagebox.showerror("Exportar", "Falta a biblioteca openpyxl. Rode “python iniciar.py --instalar”.", parent=self)
                 return

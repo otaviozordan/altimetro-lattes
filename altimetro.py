@@ -499,6 +499,11 @@ def interface():
             app._listar_relatorios()
             webbrowser.open(pathlib.Path(caminho).as_uri())
 
+    def caixa(pai, texto, var):
+        """Caixa de marcar com o visto do sistema (a do tema clam mostra um x)."""
+        return tk.Checkbutton(pai, text=texto, variable=var, bg=CARTAO, activebackground=CARTAO, fg=TINTA,
+                              font=(FONTE, 10), anchor="w", highlightthickness=0, bd=0, cursor="hand2")
+
     class EditarMembro(tk.Toplevel):
         """Editar um membro depois de adicionado: nome, categoria, se entra nas
         estatisticas, ORCID, perfis do OpenAlex, foto, trabalhos ocultos e remover."""
@@ -540,7 +545,7 @@ def interface():
             for i, (rot, w) in enumerate(linhas):
                 tk.Label(corpo, text=rot, bg=CARTAO).grid(row=i, column=0, sticky="w", pady=4)
                 w.grid(row=i, column=1, sticky="w", padx=(12, 0), pady=4)
-            ttk.Checkbutton(corpo, text="Entra nas estatísticas", variable=self.v_inc).grid(row=len(linhas), column=1, sticky="w", padx=(12, 0), pady=4)
+            caixa(corpo, "Entra nas estatísticas", self.v_inc).grid(row=len(linhas), column=1, sticky="w", padx=(12, 0), pady=4)
 
             oa = tk.Frame(self, bg=CARTAO)
             oa.pack(fill="x", pady=(10, 0))
@@ -649,8 +654,8 @@ def interface():
             self.transient(app)
             tk.Label(self, text=f"Perfis do OpenAlex de {nome}" if m else "Adicionar pela busca no OpenAlex", font=(FONTE, 13, "bold"),
                      bg=CARTAO, fg=MARINHO).pack(anchor="w")
-            tk.Label(self, text="O OpenAlex tem homônimos e às vezes divide a mesma pessoa em mais de um perfil. Marque (clique em ✓) "
-                     "todos os perfis que são desta pessoa; confira pela instituição, pelos anos, pelos temas e pelo ORCID.",
+            tk.Label(self, text="O OpenAlex tem homônimos e às vezes divide a mesma pessoa em mais de um perfil. Clique nas linhas "
+                     "de todos os perfis que são desta pessoa (ficam marcadas com ✓); confira pela instituição, pelos anos, pelos temas e pelo ORCID.",
                      font=(FONTE, 9), bg=CARTAO, fg=MUDO, wraplength=app.px(1000), justify="left").pack(anchor="w", pady=(2, 10))
             barra = tk.Frame(self, bg=CARTAO)
             barra.pack(fill="x")
@@ -711,25 +716,37 @@ def interface():
             linhas += [["✓", "(vinculado antes)", "", "", "", "", "", i] for i in sorted(self.marcados - {c["id"] for c in self.candidatos})]
             self.t.mostrar(["", "Nome no OpenAlex", "Última instituição", "Obras", "Anos", "ORCID", "Temas", "ID"], linhas,
                            [36, 230, 230, 60, 90, 150, 330, 120])
+            self.t.tv.tag_configure("marcado", background="#DDEBFB", font=(FONTE, 10, "bold"))
+            for linha in self.t.tv.get_children():
+                self._pintar(linha, self.t.tv.item(linha, "values")[7])
             self.lb_sel.configure(text=f"{n.qt(len(self.marcados), 'perfil marcado', 'perfis marcados')}")
 
         def _marcar(self, e):
-            if self.t.tv.identify_region(e.x, e.y) != "cell" or self.t.tv.identify_column(e.x) != "#1":
+            """Clique em qualquer ponto da linha marca ou desmarca o perfil."""
+            if self.t.tv.identify_region(e.x, e.y) not in ("cell", "tree"):
                 return None
             linha = self.t.tv.identify_row(e.y)
             if not linha:
                 return None
             i = self.t.tv.item(linha, "values")[7]
             self.marcados ^= {i}
-            self.t.tv.set(linha, 0, "✓" if i in self.marcados else "")
+            self._pintar(linha, i)
             self.lb_sel.configure(text=f"{n.qt(len(self.marcados), 'perfil marcado', 'perfis marcados')}")
             return "break"
+
+        def _pintar(self, linha, i):
+            marcado = i in self.marcados
+            self.t.tv.set(linha, 0, "✓" if marcado else "")
+            self.t.tv.item(linha, tags=("marcado",) if marcado else ())
 
         def _salvar(self):
             app = self.app
             app._reler_grupo()
             g = app.grupo
             escolhidos = [c for c in self.candidatos if c["id"] in self.marcados]
+            if self.lid and not self.marcados and not (g.membro(self.lid) or {}).get("openalex"):
+                messagebox.showinfo("Vincular", "Nenhum perfil marcado. Clique nas linhas dos perfis que são desta pessoa.", parent=self)
+                return
             if self.lid:
                 m = g.membro(self.lid)
                 ids = sorted(self.marcados)
@@ -761,6 +778,7 @@ def interface():
             g.salvar()
             self.destroy()
             app._carregar_base()
+            app.nb.select(app.abas["membros"])
             app._rodar(["faltam", "gerar"])
 
     class App(tk.Tk):
@@ -1229,13 +1247,17 @@ def interface():
             cb.set(n.CATEGORIAS[0])
             cb.pack(side="left", padx=8)
             v_baixar = tk.BooleanVar(value=True)
-            ttk.Checkbutton(j, text="Baixar os currículos agora", variable=v_baixar).pack(anchor="w", pady=(10, 0))
+            caixa(j, "Baixar os currículos agora", v_baixar).pack(anchor="w", pady=(10, 0))
             lk = tk.Label(j, text="Não sabe o ORCID? Buscar a pessoa no OpenAlex pelo nome…", font=(FONTE, 9, "underline"), fg=ACENTO, bg=CARTAO, cursor="hand2")
             lk.pack(anchor="w", pady=(8, 0))
-            lk.bind("<Button-1>", lambda e: (j.destroy(), VincularOpenAlex(self, None, cb.get().strip())))
+            def buscar_nome(_e=None):
+                cat = cb.get().strip()
+                j.destroy()
+                VincularOpenAlex(self, None, cat)
+            lk.bind("<Button-1>", buscar_nome)
 
             def ok():
-                novos = self._adicionar_texto(tx.get("1.0", "end"), cb.get().strip())
+                novos = self._adicionar_texto(tx.get("1.0", "end"), cb.get().strip(), j)
                 if novos is None:
                     return
                 j.destroy()
@@ -1417,7 +1439,7 @@ def interface():
             for chave, titulo, padrao in relatorio.SECOES:
                 v = tk.BooleanVar(value=padrao)
                 self.v_secoes[chave] = v
-                ttk.Checkbutton(esq, text=titulo, variable=v).pack(anchor="w", pady=1)
+                caixa(esq, titulo, v).pack(anchor="w", pady=1)
             ttk.Button(esq, text="Salvar relatório", style="Acento.TButton", command=self._gerar_relatorio).pack(anchor="w", pady=(14, 0))
 
             dir_ = ttk.Frame(f, style="Cartao.TFrame", padding=(24, 0, 0, 0))
@@ -1622,7 +1644,7 @@ def interface():
             if self._adicionar_texto(self.tx_ids.get("1.0", "end"), self.cb_cat_novo.get().strip()) is not None:
                 self.tx_ids.delete("1.0", "end")
 
-        def _adicionar_texto(self, texto, cat):
+        def _adicionar_texto(self, texto, cat, janela=None):
             """IDs Lattes (16 digitos) ou ORCID, um por linha, com o nome depois se quiser.
             Devolve quantos entraram (None: nada reconhecido)."""
             if not self.grupo:
@@ -1632,19 +1654,22 @@ def interface():
             self._reler_grupo()
             novos, repetidos = 0, 0
             for linha in texto.splitlines():
-                m = re.search(r"(?<!\d)(\d{16})(?!\d)", linha) or re.search(n.ORCID_RE, linha)
+                m = re.search(r"(?<!\d)(\d{16})(?!\d)", linha) or re.search(n.ORCID_RE, linha) or re.search(n.KID_RE, linha)
                 if not m:
                     continue
                 lid = m.group(1) if m.lastindex else m.group(0).upper()
                 if self.grupo.membro(lid):
                     repetidos += 1
                     continue
-                resto = re.sub(r"\S*(lattes\.cnpq\.br|orcid\.org)/\S*", "", linha).replace(m.group(0), "")
+                resto = re.sub(r"\S*(lattes\.cnpq\.br|orcid\.org|cnpq\.br/buscatextual)\S*", "", linha).replace(m.group(0), "")
                 nome = re.sub(r"^[\s,;:\-–\t|]+|[\s,;:\-–\t|]+$", "", resto).strip()
                 self.grupo.membros.append({"id": lid, "nome": nome, "categoria": cat, "incluir": True})
                 novos += 1
             if not novos and not repetidos:
-                messagebox.showinfo("Adicionar membros", "Nenhum ID Lattes (16 dígitos) nem ORCID (0000-0000-0000-0000) encontrado no texto.", parent=self)
+                messagebox.showinfo("Adicionar membros", "Nenhum ID reconhecido no texto. Use, um por linha:\n\n"
+                                    "• o link ou o ID Lattes (16 dígitos, ex.: http://lattes.cnpq.br/4963257858781799)\n"
+                                    "• o endereço do currículo no navegador (…visualizacv.do?id=K4770378U4)\n"
+                                    "• o ORCID (0000-0003-0811-6334)", parent=janela or self)
                 return None
             self.grupo.salvar()
             self._carregar_base()
@@ -1745,7 +1770,12 @@ def interface():
                 b.state(["!disabled"] if livre else ["disabled"])
 
         def _rodar(self, etapas):
-            if self.tarefa or not self.grupo:
+            if not self.grupo:
+                return
+            if self.tarefa:  # ja ha uma atualizacao: as etapas novas entram na fila
+                juntas = [e for e in self.etapas + list(etapas) if e != "gerar"]
+                self.etapas = list(dict.fromkeys(juntas)) + (["gerar"] if "gerar" in self.etapas + list(etapas) else [])
+                self.lb_prog.configure(text=self.lb_prog.cget("text") + "  (mais uma atualização na fila)")
                 return
             self._reler_grupo()
             if not self.grupo.membros:

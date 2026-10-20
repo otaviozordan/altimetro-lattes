@@ -165,8 +165,12 @@ def e_orcid(lid):
     return bool(re.fullmatch(ORCID_RE, str(lid or "")))
 
 
+KID_RE = r"K\d{7}[A-Z]\d"  # o ID de 10 caracteres do Lattes (endereco ...visualizacv.do?id=K4770378U4)
+
+
 def e_lattes(lid):
-    return bool(re.fullmatch(r"\d{16}", str(lid or "")))
+    """ID Lattes de 16 digitos ou o de 10 caracteres (K...); o de 10 vira o de 16 no download."""
+    return bool(re.fullmatch(r"\d{16}|" + KID_RE, str(lid or "")))
 
 
 def e_openalex(lid):
@@ -179,6 +183,8 @@ def link_perfil(lid):
         return f"https://orcid.org/{lid}"
     if e_openalex(lid):
         return "https://openalex.org/" + lid.split(":", 1)[1]
+    if re.fullmatch(KID_RE, str(lid)):
+        return f"http://buscatextual.cnpq.br/buscatextual/visualizacv.do?id={lid}"
     return f"http://lattes.cnpq.br/{lid}"
 
 
@@ -423,6 +429,11 @@ def avisar(*partes):
     print("@@", *partes, flush=True)
 
 
+def id_de_16(html):
+    m = re.search(r"acessar este CV:?\s*(?:<[^>]+>\s*)*\s*https?://lattes\.cnpq\.br/(\d{16})", html)
+    return m.group(1) if m else ""
+
+
 def cv_valido(html, lid):
     return "Curr" in html and lid in html and "captcha" not in html.lower()[:2000]
 
@@ -482,6 +493,19 @@ def cmd_baixar(pasta, so_faltam):
             falhas.append(nome)
             print("  falhou:", (str(e).splitlines() or [type(e).__name__])[0], flush=True)
             continue
+        if re.fullmatch(KID_RE, m["id"]):  # cadastrado pelo ID K...: passa a usar o de 16 digitos do proprio CV
+            novo = id_de_16(html)
+            if novo:
+                g2 = Grupo(pasta)
+                mm = g2.membro(m["id"])
+                if mm is not None:
+                    if g2.membro(novo):
+                        g2.membros.remove(mm)  # a pessoa ja estava no grupo pelo outro ID
+                    else:
+                        mm["id"] = novo
+                    g2.salvar()
+                print(f"  ID {m['id']} -> {novo}", flush=True)
+                m = dict(m, id=novo)
         with open(g.cv(m["id"]), "w", encoding="utf-8") as f:
             f.write(html)
         ok += 1

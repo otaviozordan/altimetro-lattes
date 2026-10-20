@@ -9,9 +9,16 @@ import os
 NOME = "Altímetro"
 SLOGAN = "Métricas de grupos de pesquisa a partir do Currículo Lattes"
 VERSAO = "1.0"
-AUTOR = "Otávio Zordan Alves"
-CURSO = "Engenharia Mecânica Aeronáutica"
+# Autoria (pagina Sobre, rodape dos relatorios e README)
+AUTORES = [
+    {"nome": "Otávio Zordan Alves", "descricao": "Engenharia Mecânica Aeronáutica · UNIFEI",
+     "gemec": "https://gemec.unifei.edu.br/membro/otavio-zordan-alves/", "linkedin": "https://www.linkedin.com/in/otavio-zordan"},
+    {"nome": "Guilherme Ferreira Gomes", "descricao": "Professor · Líder do GEMEC · UNIFEI",
+     "gemec": "https://gemec.unifei.edu.br/membro/guilherme-ferreira-gomes/", "linkedin": "https://www.linkedin.com/in/guilhermefergom/"},
+]
+AUTOR = " e ".join(a["nome"] for a in AUTORES)
 INSTITUICAO = "UNIFEI – Universidade Federal de Itajubá"
+GEMEC = "https://gemec.unifei.edu.br"
 
 # Cores da marca (interface e relatorio)
 MARINHO = "#0F2D4E"

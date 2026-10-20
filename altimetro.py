@@ -780,12 +780,21 @@ def interface():
             tk.Label(meio, text=marca.NOME, font=(FONTE, 30, "bold"), fg=MARINHO, bg=CARTAO).pack()
             tk.Label(meio, text=marca.SLOGAN, font=(FONTE, 12), fg=MUDO, bg=CARTAO).pack()
             tk.Label(meio, text=f"versão {marca.VERSAO}", font=(FONTE, 9), fg=MUDO, bg=CARTAO).pack(pady=(2, 18))
-            cred = tk.Frame(meio, bg=marca.AZUL_CLARO, padx=28, pady=16)
-            cred.pack()
-            tk.Label(cred, text="CRIADO POR", font=(FONTE, 8, "bold"), fg=ACENTO, bg=marca.AZUL_CLARO).pack()
-            tk.Label(cred, text=marca.AUTOR, font=(FONTE, 16, "bold"), fg=TINTA, bg=marca.AZUL_CLARO).pack(pady=(2, 0))
-            tk.Label(cred, text=marca.CURSO, font=(FONTE, 11), fg=TINTA, bg=marca.AZUL_CLARO).pack()
-            tk.Label(cred, text=marca.INSTITUICAO, font=(FONTE, 11), fg=TINTA, bg=marca.AZUL_CLARO).pack()
+            tk.Label(meio, text="AUTORIA", font=(FONTE, 8, "bold"), fg=ACENTO, bg=CARTAO).pack()
+            autores = tk.Frame(meio, bg=CARTAO)
+            autores.pack(pady=(6, 0))
+            for i, a in enumerate(marca.AUTORES):
+                c = tk.Frame(autores, bg=marca.AZUL_CLARO, padx=24, pady=14)
+                c.grid(row=0, column=i, padx=8, sticky="nsew")
+                tk.Label(c, text=a["nome"], font=(FONTE, 14, "bold"), fg=TINTA, bg=marca.AZUL_CLARO).pack()
+                tk.Label(c, text=a["descricao"], font=(FONTE, 10), fg=TINTA, bg=marca.AZUL_CLARO).pack(pady=(2, 8))
+                links = tk.Frame(c, bg=marca.AZUL_CLARO)
+                links.pack()
+                for rot, url in (("Página no GEMEC", a["gemec"]), ("LinkedIn", a["linkedin"])):
+                    lk = tk.Label(links, text=rot, font=(FONTE, 10, "underline"), fg=ACENTO, bg=marca.AZUL_CLARO, cursor="hand2")
+                    lk.pack(side="left", padx=8)
+                    lk.bind("<Button-1>", lambda e, u=url: webbrowser.open(u))
+            tk.Label(meio, text=marca.INSTITUICAO, font=(FONTE, 10), fg=MUDO, bg=CARTAO).pack(pady=(10, 0))
             texto = ("Cadastre os membros do grupo pelo ID Lattes: o Altímetro baixa os currículos, processa tudo com o "
                      "scriptLattes e mostra a produção, as orientações, os projetos e a colaboração do grupo em qualquer período, "
                      "com gráficos, indicadores, relatórios e exportação para Excel.")

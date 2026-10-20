@@ -64,6 +64,7 @@ tr.total td{font-weight:700;background:#F7F9FB}
 .pessoa span{color:var(--mudo);font-size:12px}
 footer{margin-top:48px;padding-top:16px;border-top:1px solid var(--borda);color:var(--mudo);font-size:12.5px;display:flex;gap:14px;align-items:center}
 footer svg{flex:none}
+footer a{color:var(--azul)}
 .imprimir{position:fixed;right:20px;bottom:20px;background:var(--azul);color:#fff;border:0;border-radius:999px;padding:10px 18px;font:600 14px "Segoe UI",Arial;cursor:pointer;box-shadow:0 4px 14px rgba(15,45,78,.25)}
 @media (max-width:760px){.cards{grid-template-columns:repeat(2,minmax(0,1fr))}header .pagina{flex-direction:column;align-items:flex-start}}
 @media print{body{background:#fff;font-size:12.5px}.imprimir{display:none}header{-webkit-print-color-adjust:exact;print-color-adjust:exact}
@@ -150,6 +151,10 @@ def equipe(est, base, grupo):
     return "".join(h)
 
 
+def autoria():
+    return " e ".join(f'<a href="{e(a["gemec"])}">{e(a["nome"])}</a> (<a href="{e(a["linkedin"])}">LinkedIn</a>)' for a in marca.AUTORES)
+
+
 def gerar(est, base, grupo, secoes=None):
     secoes = set(secoes or [k for k, _t, padrao in SECOES if padrao])
     per = f"{est.a}" if est.a == est.b else f"{est.a} a {est.b}"
@@ -208,8 +213,8 @@ def gerar(est, base, grupo, secoes=None):
 <header><div class="pagina">{marca.logo_svg(64)}<div><div class="marca">{e(marca.NOME)} · relatório do grupo</div>
 <h1>{e(grupo.nome)}</h1><p>Período {e(per)} · gerado em {hoje:%d/%m/%Y} · dados do Currículo Lattes</p></div></div></header>
 <main class="pagina">{''.join(corpo)}
-<footer>{marca.logo_svg(28)}<div>Gerado pelo <strong>{e(marca.NOME)}</strong> {e(marca.VERSAO)}, criado por {e(marca.AUTOR)}
-({e(marca.CURSO)}, {e(marca.INSTITUICAO)}). Dados dos Currículos Lattes (CNPq), processados pelo scriptLattes
+<footer>{marca.logo_svg(28)}<div>Gerado pelo <strong>{e(marca.NOME)}</strong> {e(marca.VERSAO)}, de {autoria()}
+({e(marca.INSTITUICAO)}). Dados dos Currículos Lattes (CNPq), processados pelo scriptLattes
 (Mena-Chalco &amp; Cesar-Jr.).</div></footer></main>
 <button class="imprimir" onclick="window.print()">Imprimir ou salvar em PDF</button>
 </body></html>"""

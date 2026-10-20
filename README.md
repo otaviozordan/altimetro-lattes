@@ -93,7 +93,12 @@ Cada grupo fica em `grupos/<nome>/`, com `membros.json`, `cache/` (currículos),
 
 ## Créditos e licença
 
-Criado por **Otávio Zordan Alves** — Engenharia Mecânica Aeronáutica, **UNIFEI** (Universidade Federal de Itajubá).
+Autoria:
+
+- **Otávio Zordan Alves**, Engenharia Mecânica Aeronáutica · UNIFEI · [página no GEMEC](https://gemec.unifei.edu.br/membro/otavio-zordan-alves/) · [LinkedIn](https://www.linkedin.com/in/otavio-zordan)
+- **Guilherme Ferreira Gomes**, Professor · Líder do GEMEC · UNIFEI · [página no GEMEC](https://gemec.unifei.edu.br/membro/guilherme-ferreira-gomes/) · [LinkedIn](https://www.linkedin.com/in/guilhermefergom/)
+
+Feito no [GEMEC](https://gemec.unifei.edu.br), da UNIFEI (Universidade Federal de Itajubá).
 
 O Altímetro é software livre, sob a [GNU General Public License v3.0](LICENSE): você pode usar, estudar, modificar e redistribuir, mantendo a mesma licença.
 

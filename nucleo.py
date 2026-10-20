@@ -21,6 +21,7 @@ import sys
 import tempfile
 import threading
 import unicodedata
+import urllib.parse
 import urllib.request
 import webbrowser
 import math
@@ -156,6 +157,80 @@ def baixar_foto(g, lid, html=None):
     return ok
 
 
+ORCID_RE = r"\d{4}-\d{4}-\d{4}-\d{3}[\dXx]"
+
+
+def e_orcid(lid):
+    """Membro cadastrado pelo ORCID (sem Lattes: dados do OpenAlex)."""
+    return bool(re.fullmatch(ORCID_RE, str(lid or "")))
+
+
+def link_perfil(lid):
+    return f"https://orcid.org/{lid}" if e_orcid(lid) else f"http://lattes.cnpq.br/{lid}"
+
+
+OPENALEX = "https://api.openalex.org"
+AGENTE = "Altimetro (https://github.com/otaviozordan/altimetro-lattes)"
+
+
+def _openalex(caminho, chave=None):
+    if chave:
+        caminho += ("&" if "?" in caminho else "?") + "api_key=" + urllib.parse.quote(chave)
+    req = urllib.request.Request(OPENALEX + caminho, headers={"User-Agent": AGENTE})
+    with urllib.request.urlopen(req, timeout=90) as r:  # noqa: S310 - endereco fixo do OpenAlex
+        return json.loads(r.read().decode("utf-8"))
+
+
+def baixar_openalex(g, orcid, chave=None):
+    """Autor e obras do OpenAlex pelo ORCID, gravados em openalex/<orcid>.json."""
+    autor = _openalex(f"/authors/orcid:{orcid}", chave)
+    obras = []
+    campos = "title,publication_year,type,doi,primary_location,authorships"
+    # Paginacao simples (page=): o cursor do OpenAlex exige chave a partir da 2a pagina.
+    for pagina in range(1, 51):  # ate 10 mil obras
+        d = _openalex(f"/works?filter=author.orcid:{orcid}&per-page=200&page={pagina}&select={campos}", chave)
+        res = d.get("results") or []
+        for w in res:
+            fonte = (w.get("primary_location") or {}).get("source") or {}
+            obras.append({"titulo": w.get("title") or "", "ano": w.get("publication_year"), "tipo": w.get("type") or "",
+                          "fonte_tipo": fonte.get("type") or "", "veiculo": fonte.get("display_name") or "", "doi": doi_de(w.get("doi")),
+                          "autores": "; ".join((a.get("author") or {}).get("display_name", "") for a in w.get("authorships") or [])})
+        if len(res) < 200:
+            break
+    dados = {"orcid": orcid, "nome": autor.get("display_name") or orcid, "openalex": autor.get("id", ""),
+             "instituicao": ", ".join(i.get("display_name", "") for i in autor.get("last_known_institutions") or []),
+             "temas": [t.get("display_name", "") for t in (autor.get("topics") or [])[:10]],
+             "baixado": datetime.date.today().isoformat(), "obras": obras}
+    os.makedirs(os.path.dirname(g.cv(orcid)), exist_ok=True)
+    gravar_json(g.cv(orcid), dados)
+    return dados
+
+
+def itens_do_openalex(d):
+    out = []
+    for w in d.get("obras") or []:
+        tipo, ft = w.get("tipo", ""), w.get("fonte_tipo", "")
+        if tipo in ("paratext", "erratum", "retraction", "peer-review", "supplementary-materials"):
+            continue
+        if tipo == "book":
+            cat = "livros"
+        elif tipo == "book-chapter" or ft == "book series":
+            cat = "capitulos"
+        elif tipo == "dataset":
+            cat = "tecnica"
+        elif tipo in ("dissertation", "preprint", "report", "standard", "grant"):
+            cat = "outras_bib"
+        elif ft == "conference":
+            cat = "completos"
+        elif ft == "journal":
+            cat = "artigos"
+        else:
+            cat = "outras_bib"
+        out.append(Item(cat, ano_int(w.get("ano")), w.get("titulo"), w.get("autores"), w.get("veiculo"), w.get("doi") or "",
+                        extra="Dataset" if cat == "tecnica" else ""))
+    return out
+
+
 def nome_no_cv(html):
     m = re.search(r'<h2 class="nome"[^>]*>\s*([^<]+)', html)
     return re.sub(r"\s+", " ", m.group(1)).strip() if m else ""
@@ -203,6 +278,8 @@ class Grupo:
         return None
 
     def cv(self, lid):
+        if e_orcid(lid):
+            return os.path.join(self.pasta, "openalex", lid + ".json")
         return os.path.join(self.cache, lid)
 
     def cv_data(self, lid):
@@ -224,8 +301,12 @@ class Grupo:
     def relatorios(self):
         return os.path.join(self.pasta, "relatorios")
 
-    def tem_relatorio(self):
+    def tem_scriptlattes(self):
         return os.path.exists(os.path.join(self.saida, "index.html"))
+
+    def tem_relatorio(self):
+        """Ha dados para as estatisticas (scriptLattes ou OpenAlex)."""
+        return self.tem_scriptlattes() or bool(glob.glob(os.path.join(self.pasta, "openalex", "*.json")))
 
 
 # ------------------------------------- download e scriptLattes (outro processo)
@@ -240,14 +321,41 @@ def cv_valido(html, lid):
 
 def cmd_baixar(pasta, so_faltam):
     """Baixa os CVs com o baixaLattes do scriptLattes (Chrome headless)."""
-    sys.path.insert(0, SCRIPTLATTES)
-    from scriptLattes.baixaLattes import baixaCVLattes
     g = Grupo(pasta)
     os.makedirs(g.cache, exist_ok=True)
-    lista = [m for m in g.membros if not (so_faltam and os.path.exists(g.cv(m["id"])))]
-    if not lista:
+    todos = [m for m in g.membros if not (so_faltam and os.path.exists(g.cv(m["id"])))]
+    if not todos:
         avisar("fim", "ok", "Todos os currículos já estavam baixados.")
         return
+    orcids = [m for m in todos if e_orcid(m["id"])]
+    lista = [m for m in todos if not e_orcid(m["id"])]
+    ok_o, falhas_o = 0, []
+    chave = ler_json(PREFERENCIAS, {}).get("openalex_chave") or None
+    for k, m in enumerate(orcids, 1):
+        nome = m.get("nome") or m["id"]
+        avisar("prog", k - 1, len(orcids), f"OpenAlex: {nome}")
+        print(f"[ORCID {k}/{len(orcids)}] {nome}", flush=True)
+        try:
+            d = baixar_openalex(g, m["id"], chave)
+        except Exception as e:  # noqa: BLE001
+            falhas_o.append(nome)
+            print("  falhou:", "ORCID não encontrado no OpenAlex" if "404" in str(e) else str(e)[:200], flush=True)
+            continue
+        ok_o += 1
+        print(f"  {len(d['obras'])} obras", flush=True)
+        if not m.get("nome") or m["nome"] == m["id"]:
+            g2 = Grupo(pasta)
+            mm = g2.membro(m["id"])
+            if mm is not None:
+                mm["nome"] = d["nome"]
+                g2.salvar()
+    if not lista:
+        msg = f"{ok_o} de {len(orcids)} perfis do OpenAlex baixados." + (" Falharam: " + ", ".join(falhas_o) + "." if falhas_o else "")
+        avisar("prog", 1, 1, msg)
+        avisar("fim", "ok" if ok_o or not falhas_o else "erro", msg)
+        return
+    sys.path.insert(0, SCRIPTLATTES)
+    from scriptLattes.baixaLattes import baixaCVLattes
     # Uma subpasta nova por CV: o baixaCVLattes pula o que ja existe no destino,
     # e no OneDrive apagar e recriar a mesma pasta costuma falhar.
     raiz = os.path.join(pasta, "_baixando")
@@ -283,6 +391,9 @@ def cmd_baixar(pasta, so_faltam):
                 g2.salvar()
     shutil.rmtree(raiz, ignore_errors=True)
     msg = f"{ok} de {len(lista)} currículos baixados."
+    if orcids:
+        msg += f" {ok_o} de {len(orcids)} perfis do OpenAlex."
+    falhas += falhas_o
     if falhas:
         msg += " Falharam: " + ", ".join(falhas) + "."
     avisar("prog", len(lista), len(lista), msg)
@@ -292,9 +403,15 @@ def cmd_baixar(pasta, so_faltam):
 def cmd_gerar(pasta):
     """Roda o scriptLattes com os CVs que estao no cache."""
     g = Grupo(pasta)
-    presentes = [m for m in g.membros if os.path.exists(g.cv(m["id"]))]
+    presentes = [m for m in g.membros if os.path.exists(g.cv(m["id"])) and not e_orcid(m["id"])]
+    do_openalex = [m for m in g.membros if e_orcid(m["id"]) and os.path.exists(g.cv(m["id"]))]
     if not presentes:
-        avisar("fim", "erro", "Nenhum currículo baixado ainda.")
+        if do_openalex:
+            if os.path.isdir(g.saida):
+                shutil.rmtree(g.saida, ignore_errors=True)
+            avisar("fim", "ok", f"Estatísticas com {len(do_openalex)} perfis do OpenAlex.")
+        else:
+            avisar("fim", "erro", "Nenhum currículo baixado ainda.")
         return
     faltam_fotos = [m for m in presentes if not g.foto(m["id"]) and not os.path.exists(os.path.join(g.fotos, m["id"] + ".sem"))]
     for k, m in enumerate(faltam_fotos, 1):
@@ -322,7 +439,7 @@ def cmd_gerar(pasta):
     env = dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
     r = subprocess.run([sys.executable, os.path.join(SCRIPTLATTES, "scriptLattes.py"), config],
                        cwd=SCRIPTLATTES, env=env, stdout=sys.stdout, stderr=subprocess.STDOUT)
-    if r.returncode != 0 or not g.tem_relatorio():
+    if r.returncode != 0 or not g.tem_scriptlattes():
         avisar("fim", "erro", "O scriptLattes falhou; veja o registro.")
         return
     # O nome completo vem do proprio CV: completa quem foi cadastrado so pelo ID.
@@ -334,7 +451,7 @@ def cmd_gerar(pasta):
             mm["nome"] = info["nome_completo"]
     g2.salvar()
     avisar("prog", 1, 1, "Relatório gerado.")
-    avisar("fim", "ok", f"Estatísticas geradas com {len(presentes)} currículos.")
+    avisar("fim", "ok", f"Estatísticas geradas com {len(presentes)} currículos" + (f" e {len(do_openalex)} perfis do OpenAlex." if do_openalex else "."))
 
 
 # -------------------------------------------------------- leitura dos dados
@@ -473,6 +590,41 @@ def itens_do_json(d):
     return out
 
 
+def _titulo_formacao(desc):
+    m = re.search(r"T[íi]tulo:\s*(.+?)(?:,\s*Ano de|\.\s*Orientador|\s+O Portal|\.\s*Bolsista|$)", desc or "")
+    return m.group(1).strip()[:220] if m else ""
+
+
+def perfil_lattes(d):
+    info = d.get("informacoes_pessoais") or {}
+    lid = str(info.get("id_lattes") or "")
+    form = []
+    for f in d.get("formacao_academica") or []:
+        anos = "–".join(x for x in (str(f.get("ano_inicio") or ""), str(f.get("ano_conclusao") or "")) if x)
+        form.append({"tipo": f.get("tipo", ""), "instituicao": f.get("nome_instituicao", ""), "anos": anos,
+                     "titulo": _titulo_formacao(f.get("descricao", ""))})
+    areas = []
+    for a in d.get("areas_de_atuacao") or []:
+        x = " / ".join(v for v in (a.get("area"), a.get("subarea"), a.get("especialidade")) if v) if isinstance(a, dict) else str(a)
+        if x and x not in areas:
+            areas.append(x)
+    return {"nome": info.get("nome_completo") or lid, "atualizado": info.get("atualizacao_cv", ""), "fonte": "Lattes",
+            "resumo": info.get("texto_resumo", ""), "bolsa": info.get("bolsa_produtividade", ""),
+            "endereco": info.get("endereco_profissional", ""), "formacao": form,
+            "linhas": [x.get("nome", "") for x in d.get("linhas_de_pesquisa") or [] if x.get("nome")],
+            "areas": areas, "idiomas": [f"{x.get('nome', '')}: {x.get('proficiencia_completa', '')}" for x in d.get("idiomas") or []],
+            "link": link_perfil(lid)}
+
+
+def perfil_openalex(d):
+    data = d.get("baixado", "")
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", data):
+        data = f"{data[8:10]}/{data[5:7]}/{data[:4]}"
+    return {"nome": d.get("nome") or d.get("orcid"), "atualizado": data, "fonte": "OpenAlex (ORCID)",
+            "resumo": "", "bolsa": "", "endereco": d.get("instituicao", ""), "formacao": [], "linhas": d.get("temas") or [],
+            "areas": [], "idiomas": [], "link": link_perfil(d.get("orcid")), "openalex": d.get("openalex", "")}
+
+
 class Base:
     """Itens do grupo inteiro, sem repeticao: o mesmo trabalho no CV de dois
     membros conta uma vez para o grupo (e uma vez para cada um deles)."""
@@ -490,24 +642,34 @@ class Base:
             lid = str(info.get("id_lattes") or "")
             if not lid:
                 continue
-            self.pessoas[lid] = {"nome": info.get("nome_completo") or lid, "atualizado": info.get("atualizacao_cv", "")}
-            for it in itens_do_json(d):
-                if not it.titulo:
-                    continue
-                k = it.chave(lid)
-                if k in unidos:
-                    velho = unidos[k]
-                    velho.membros.add(lid)
-                    velho.coord |= it.coord
-                    if not velho.ano and it.ano:
-                        velho.ano = it.ano
-                else:
-                    it.membros.add(lid)
-                    unidos[k] = it
+            self.pessoas[lid] = perfil_lattes(d)
+            self._juntar(lid, itens_do_json(d), unidos)
+        for m in grupo.membros:
+            if e_orcid(m["id"]) and os.path.exists(grupo.cv(m["id"])):
+                d = ler_json(grupo.cv(m["id"]), None)
+                if d:
+                    self.pessoas[m["id"]] = perfil_openalex(d)
+                    self._juntar(m["id"], itens_do_openalex(d), unidos)
         self.itens = list(unidos.values())
         anos = [it.ano for it in self.itens if it.ano]
         self.ano_min = min(anos) if anos else datetime.date.today().year
         self.ano_max = max(max(anos) if anos else 0, datetime.date.today().year)
+
+    @staticmethod
+    def _juntar(lid, itens, unidos):
+        for it in itens:
+            if not it.titulo:
+                continue
+            k = it.chave(lid)
+            if k in unidos:
+                velho = unidos[k]
+                velho.membros.add(lid)
+                velho.coord |= it.coord
+                if not velho.ano and it.ano:
+                    velho.ano = it.ano
+            else:
+                it.membros.add(lid)
+                unidos[k] = it
 
 
 # ----------------------------------------------------------------- calculo
@@ -515,6 +677,7 @@ class Base:
 class Estat:
     def __init__(self, base, sel, a, b):
         self.a, self.b, self.sel = a, b, set(sel)
+        self.grupo = base.grupo
         self.anos = list(range(a, b + 1))
         nomes_sel = {norm(base.pessoas[i]["nome"]) for i in sel if i in base.pessoas}
         self.itens = []
@@ -563,6 +726,41 @@ class Estat:
     def de(self, cats):
         cats = set(cats)
         return [(it, q) for it, q in self.itens if it.cat in cats]
+
+
+def itens_filtro(est, f):
+    """Os itens a que uma barra do grafico se refere. f: {"cats", "ano", "inicio",
+    "ativo_em", "membro", "veiculo", "extra", "categoria_membro", "par"}."""
+    cats = set(f.get("cats") or [])
+    out = []
+    for it, quem in est.itens:
+        if cats and it.cat not in cats:
+            continue
+        if "ano" in f and it.ano != f["ano"]:
+            continue
+        if "inicio" in f and it.ano != f["inicio"]:
+            continue
+        if "ativo_em" in f and not ((it.ano or est.a) <= f["ativo_em"] and (it.fim is None or it.fim >= f["ativo_em"])):
+            continue
+        if "membro" in f and f["membro"] not in quem:
+            continue
+        if "par" in f and not set(f["par"]) <= quem:
+            continue
+        if "veiculo" in f and chave_texto(it.veiculo, 200) != f["veiculo"]:
+            continue
+        if "extra" in f and (it.extra or "Sem tipo") != f["extra"]:
+            continue
+        if "categoria_membro" in f and not any(((est.grupo.membro(p) or {}).get("categoria") or "Sem categoria") == f["categoria_membro"] for p in quem):
+            continue
+        out.append((it, quem))
+    out.sort(key=lambda x: (-(x[0].ano or 0), list(CATS).index(x[0].cat) if x[0].cat in CATS else 99, norm(x[0].titulo)))
+    return out
+
+
+def tabela_de(est, base, itens):
+    cab = ["Tipo", "Ano", "Título", "Autores / pessoas", "Veículo", "DOI", "Membros do grupo"]
+    return cab, [[rotulo(it.cat), it.ano or "", it.titulo, it.pessoas, it.veiculo, it.doi,
+                  "; ".join(sorted(base.pessoas[p]["nome"] for p in q if p in base.pessoas))] for it, q in itens]
 
 
 def rotulo(cat):
@@ -649,30 +847,40 @@ def tabela_indicadores(est, base, grupo):
 # ------------------------------------------------------------- ficha
 
 def ficha(est, base, grupo, lid):
-    """Numeros de um membro no periodo, producao por ano e parcerias no grupo."""
+    """Pagina do membro: perfil, numeros do periodo, producao por ano, parcerias e listas."""
     c = est.por_membro.get(lid, collections.Counter())
-    por_ano = collections.defaultdict(collections.Counter)
-    for it, quem in est.itens:
-        if lid in quem and it.ano and it.cat in BIB_CATS:
-            por_ano["artigos" if it.cat == "artigos" else "eventos" if it.cat in ("completos", "expandidos", "resumos") else "outros"][it.ano] += 1
     anos = est.anos
+    meus = [(it, q) for it, q in est.itens if lid in q]
+
+    def serie(cats):
+        cont = collections.Counter(it.ano for it, _q in meus if it.cat in cats and it.ano)
+        return [cont.get(y, 0) for y in anos]
+    ev = ["completos", "expandidos", "resumos"]
+    outros = [k for k in BIB_CATS if k not in ev and k != "artigos"]
     spec = {"tipo": "colunas", "titulo": "Produção bibliográfica por ano", "categorias": anos, "series": [
-        ("Artigos em periódicos", [por_ano["artigos"].get(y, 0) for y in anos]),
-        ("Trabalhos em eventos", [por_ano["eventos"].get(y, 0) for y in anos]),
-        ("Outros", [por_ano["outros"].get(y, 0) for y in anos])]}
+        ("Artigos em periódicos", serie(["artigos"])), ("Trabalhos em eventos", serie(ev)), ("Outros", serie(outros))],
+        "filtros": [{"cats": ["artigos"], "membro": lid}, {"cats": ev, "membro": lid}, {"cats": outros, "membro": lid}]}
     parceiros = collections.Counter()
     for (a, b), p in est.pares.items():
         if lid in (a, b):
             parceiros[b if a == lid else a] += p
     m = grupo.membro(lid) or {}
+    perfil = dict(base.pessoas.get(lid) or {"nome": m.get("nome") or lid, "atualizado": "", "fonte": "", "link": link_perfil(lid)})
+    listas = [
+        ("Publicações", "Artigos, livros, capítulos e outras publicações", ["artigos", "aceitos", "livros", "capitulos", "jornais", "outras_bib"]),
+        ("Eventos", "Trabalhos e resumos em eventos, apresentações, participações e organização", ev + ["apresentacoes", "ev_part", "ev_org"]),
+        ("Orientações", "Concluídas no período e em andamento", OC + OA),
+        ("Projetos", "Ativos no período", PJ),
+        ("Outros", "Produção técnica e artística, prêmios e bancas", ["software", "patentes", "tecnica", "artistica", "premios", "bancas"]),
+    ]
     return {
-        "nome": base.pessoas.get(lid, {}).get("nome") or m.get("nome") or lid,
-        "categoria": m.get("categoria", ""),
-        "atualizado": base.pessoas.get(lid, {}).get("atualizado", ""),
-        "numeros": [("Artigos", c["artigos"]), ("Eventos (completos)", c["completos"]), ("Livros e capítulos", c["livros"] + c["capitulos"]),
-                    ("Orient. concluídas", sum(c[k] for k in OC)), ("Orient. em andamento", sum(c[k] for k in OA)), ("Projetos", sum(c[k] for k in PJ))],
+        "id": lid, "nome": perfil.get("nome") or lid, "categoria": m.get("categoria", ""), "perfil": perfil,
+        "numeros": [("Artigos", c["artigos"], "Publicações"), ("Trabalhos em eventos", c["completos"] + c["expandidos"] + c["resumos"], "Eventos"),
+                    ("Livros e capítulos", c["livros"] + c["capitulos"], "Publicações"), ("Orient. concluídas", sum(c[k] for k in OC), "Orientações"),
+                    ("Orient. em andamento", sum(c[k] for k in OA), "Orientações"), ("Projetos", sum(c[k] for k in PJ), "Projetos")],
         "grafico": spec,
-        "parceiros": [(base.pessoas.get(i, {}).get("nome", i), p) for i, p in parceiros.most_common(12)],
+        "parceiros": [(base.pessoas.get(i, {}).get("nome", i), p, i) for i, p in parceiros.most_common(15)],
+        "listas": [(t, sub, [(it, q) for it, q in meus if it.cat in set(cats)]) for t, sub, cats in listas],
     }
 
 
@@ -681,54 +889,132 @@ def iniciais(nome):
     return ((partes[0][0] + (partes[-1][0] if len(partes) > 1 else "")) if partes else "?").upper()
 
 
+def veiculos_k(est, cats, limite=None):
+    """Como veiculos(), com a chave usada pelo filtro do clique."""
+    cont, nomes = collections.Counter(), collections.defaultdict(collections.Counter)
+    for it, _q in est.de(cats):
+        if it.veiculo:
+            k = chave_texto(it.veiculo, 200)
+            cont[k] += 1
+            nomes[k][it.veiculo] += 1
+    return [(nomes[k].most_common(1)[0][0], n, k) for k, n in cont.most_common(limite)]
+
+
+def _curto(nome):
+    p = str(nome).split()
+    return " ".join(p[:1] + p[-1:]) if len(p) > 1 else str(nome)
+
+
+SECOES_GRAFICOS = ["Publicações", "Orientações", "Projetos", "Produção técnica e artística", "Eventos",
+                   "Prêmios e bancas", "Membros", "Colaboração"]
+TEC = ["software", "patentes", "tecnica", "artistica"]
+
+
 def graficos(est, base, grupo):
-    """[(chave, titulo, spec)] na ordem do menu de graficos."""
+    """[(secao, chave, titulo, spec)] nas secoes da pagina Estatisticas do GEMEC.
+    Cada barra sabe a que itens se refere: spec["filtros"] (um por serie das
+    colunas; o ano entra no clique) ou spec["refs"] (um por barra), lidos por
+    itens_filtro(). {"membro_ficha": id} abre a ficha e {"composicao": c}, a
+    lista de pessoas da categoria."""
     anos = est.anos
     pa = est.por_ano
 
     def serie(cats):
         return [sum(pa.get(c, {}).get(y, 0) for c in cats) for y in anos]
 
-    out = [
-        ("producao", "Produção bibliográfica por ano", {"tipo": "colunas", "categorias": anos, "series": [
-            ("Artigos em periódicos", serie(["artigos"])),
-            ("Trabalhos em eventos", serie(["completos", "expandidos", "resumos"])),
-            ("Livros e capítulos", serie(["livros", "capitulos"])),
-            ("Outros", serie(["aceitos", "jornais", "outras_bib", "apresentacoes"]))]}),
-        ("artigos", "Artigos em periódicos por ano", {"tipo": "colunas", "categorias": anos, "series": [("Artigos", serie(["artigos"]))]}),
-        ("orientacoes", "Orientações concluídas por ano", {"tipo": "colunas", "categorias": anos, "series": [
-            ("Doutorado", serie(["oc_doutorado"])), ("Mestrado", serie(["oc_mestrado"])),
-            ("Iniciação científica", serie(["oc_ic"])), ("TCC", serie(["oc_tcc"])),
-            ("Outras", serie(["oc_posdoc", "oc_especializacao", "oc_outras"]))]}),
-        ("projetos", "Projetos ativos por ano", {"tipo": "colunas", "categorias": anos, "series": [("Projetos", serie(["pj_ativos"]))]}),
-        ("tecnica", "Produção técnica por ano", {"tipo": "colunas", "categorias": anos, "series": [
-            ("Softwares", serie(["software"])), ("Patentes e registros", serie(["patentes"])), ("Outras", serie(["tecnica"]))]}),
-    ]
-    por = sorted(((base.pessoas[i]["nome"], est.por_membro.get(i, {}).get("artigos", 0)) for i in est.sel if i in base.pessoas),
-                 key=lambda x: (-x[1], norm(x[0])))
-    por = [x for x in por if x[1]][:15]
-    out.append(("membros", "Artigos por membro (15 primeiros)", {"tipo": "barras", "rotulos": [x[0] for x in por], "valores": [x[1] for x in por]}))
+    def colunas(series, filtros=None):
+        return {"tipo": "colunas", "categorias": anos, "series": [(nome, serie(c)) for nome, c in series],
+                "filtros": filtros or [{"cats": list(c)} for _n, c in series]}
 
+    def barras(trios, cor=None):
+        spec = {"tipo": "barras", "rotulos": [t[0] for t in trios], "valores": [t[1] for t in trios], "refs": [t[2] for t in trios]}
+        if cor:
+            spec["cor"] = cor
+        return spec
+
+    def nome(i):
+        return base.pessoas.get(i, {}).get("nome", i)
+
+    ev = ["completos", "expandidos", "resumos"]
+    out = []
+
+    S = "Publicações"
+    out.append((S, "producao", "Produção bibliográfica por ano", colunas([
+        ("Artigos em periódicos", ["artigos"]), ("Trabalhos em eventos", ev), ("Livros e capítulos", ["livros", "capitulos"]),
+        ("Outros", ["aceitos", "jornais", "outras_bib", "apresentacoes"])])))
+    out.append((S, "artigos", "Artigos em periódicos por ano", colunas([("Artigos", ["artigos"])])))
+    por = sorted(((nome(i), est.por_membro.get(i, {}).get("artigos", 0), i) for i in est.sel if i in base.pessoas), key=lambda x: (-x[1], norm(x[0])))
+    out.append((S, "membros", "Artigos por membro (15 primeiros)", barras([(n, v, {"cats": ["artigos"], "membro": i}) for n, v, i in por if v][:15])))
+    out.append((S, "periodicos", "Periódicos mais frequentes", barras([(v, n, {"cats": ["artigos", "aceitos"], "veiculo": k})
+                                                                      for v, n, k in veiculos_k(est, ["artigos", "aceitos"], 12)])))
+    tipos = sorted([(rotulo(c), est.n[c], {"cats": [c]}) for c in BIB_CATS if est.n[c]], key=lambda x: -x[1])
+    out.append((S, "tipos", "Produção bibliográfica por tipo", barras(tipos)))
+
+    S = "Orientações"
+    out.append((S, "orient_nivel", "Orientações concluídas por nível", barras(
+        [(r, est.n["oc_" + k], {"cats": ["oc_" + k]}) for k, r, _j in NIVEIS if est.n["oc_" + k]])))
+    out.append((S, "orientacoes", "Orientações concluídas por ano", colunas([
+        ("Doutorado", ["oc_doutorado"]), ("Mestrado", ["oc_mestrado"]), ("Iniciação científica", ["oc_ic"]), ("TCC", ["oc_tcc"]),
+        ("Outras", ["oc_posdoc", "oc_especializacao", "oc_outras"])])))
+    out.append((S, "andamento_nivel", "Orientações em andamento por nível", barras(
+        [(r, est.n["oa_" + k], {"cats": ["oa_" + k]}) for k, r, _j in NIVEIS if est.n["oa_" + k]], marca.SERIES[1])))
+
+    S = "Projetos"
+    inicio = collections.defaultdict(collections.Counter)
+    for it, _q in est.de(PJ):
+        if it.ano:
+            inicio[it.cat][it.ano] += 1
+    nat = [("Pesquisa", "pj_pesquisa"), ("Extensão", "pj_extensao"), ("Desenvolvimento", "pj_desenvolvimento"), ("Outros", "pj_outros")]
+    out.append((S, "proj_inicio", "Projetos iniciados por ano", {
+        "tipo": "colunas", "categorias": anos, "series": [(n, [inicio[c].get(y, 0) for y in anos]) for n, c in nat],
+        "filtros": [{"cats": [c]} for _n, c in nat]}))
+    out.append((S, "projetos", "Projetos ativos por ano", colunas([("Projetos ativos", ["pj_ativos"])], [{"cats": PJ, "_ano": "ativo_em"}])))
+
+    S = "Produção técnica e artística"
+    tipos = collections.Counter()
+    for it, _q in est.de(TEC):
+        tipos[(it.cat, it.extra or "")] += 1
+    out.append((S, "tec_tipo", "Produção técnica e artística por tipo", barras(
+        [(x or rotulo(c), v, {"cats": [c], "extra": x or "Sem tipo"}) for (c, x), v in tipos.most_common(15)], marca.SERIES[2])))
+    out.append((S, "tecnica", "Produção técnica e artística por ano", colunas([
+        ("Softwares", ["software"]), ("Patentes e registros", ["patentes"]), ("Outras técnicas", ["tecnica"]), ("Artística", ["artistica"])])))
+
+    S = "Eventos"
+    out.append((S, "eventos_ano", "Eventos por ano", colunas([
+        ("Trabalhos completos", ["completos"]), ("Resumos", ["expandidos", "resumos"]), ("Participações", ["ev_part"]),
+        ("Organização", ["ev_org"])])))
+    tipos = collections.Counter(it.extra or "Sem tipo" for it, _q in est.de(["ev_part"]))
+    out.append((S, "ev_tipo", "Participações por tipo de evento", barras(
+        [(x, v, {"cats": ["ev_part"], "extra": x}) for x, v in tipos.most_common(12)], marca.SERIES[3])))
+    out.append((S, "eventos", "Eventos mais frequentes (trabalhos publicados)", barras(
+        [(v, n, {"cats": ev, "veiculo": k}) for v, n, k in veiculos_k(est, ev, 12)])))
+
+    S = "Prêmios e bancas"
+    out.append((S, "premios", "Prêmios e títulos por ano", colunas([("Prêmios e títulos", ["premios"])])))
+    out.append((S, "bancas", "Participações em bancas por ano", colunas([("Bancas", ["bancas"])])))
+
+    S = "Membros"
     cats = collections.Counter()
     for _it, quem in est.de(BIB_CATS):
         for c in {(grupo.membro(p) or {}).get("categoria") or "Sem categoria" for p in quem}:
             cats[c] += 1
-    cc = cats.most_common()
-    out.append(("categorias", "Produção por categoria de membro", {"tipo": "barras", "rotulos": [c for c, _n in cc], "valores": [n for _c, n in cc]}))
+    out.append((S, "categorias", "Produção bibliográfica por categoria de membro", barras(
+        [(c, v, {"cats": BIB_CATS, "categoria_membro": c}) for c, v in cats.most_common()])))
+    comp = collections.Counter((grupo.membro(i) or {}).get("categoria") or "Sem categoria" for i in est.sel)
+    out.append((S, "composicao", "Composição do grupo", barras([(c, v, {"composicao": c}) for c, v in comp.most_common()], marca.SERIES[2])))
 
-    tipos = sorted([(rotulo(c), est.n[c]) for c in CATS if c not in OA and c not in PJ and est.n[c]], key=lambda x: -x[1])
-    out.append(("tipos", "Itens por tipo no período", {"tipo": "barras", "rotulos": [t for t, _n in tipos], "valores": [n for _t, n in tipos]}))
+    S = "Colaboração"
+    out.append((S, "rede", "Rede de colaboração entre os membros", rede(est, base, grupo)))
+    out.append((S, "parcerias", "Parcerias mais frequentes", barras(
+        [(f"{_curto(nome(a))} × {_curto(nome(b))}", v, {"cats": PRODUCAO, "par": [a, b]}) for (a, b), v in est.pares.most_common(12)])))
+    grau = collections.Counter()
+    for (a, b), v in est.pares.items():
+        grau[a] += 1
+        grau[b] += 1
+    out.append((S, "conectados", "Membros mais conectados (nº de parceiros no grupo)", barras(
+        [(nome(i), v, {"membro_ficha": i}) for i, v in grau.most_common(15)], marca.SERIES[6])))
 
-    v = veiculos(est, ["artigos", "aceitos"], 12)
-    out.append(("periodicos", "Periódicos mais frequentes", {"tipo": "barras", "rotulos": [x for x, _n in v], "valores": [n for _x, n in v]}))
-    v = veiculos(est, ["completos", "expandidos", "resumos"], 12)
-    out.append(("eventos", "Eventos mais frequentes", {"tipo": "barras", "rotulos": [x for x, _n in v], "valores": [n for _x, n in v]}))
-
-    cc = collections.Counter((grupo.membro(i) or {}).get("categoria") or "Sem categoria" for i in est.sel).most_common()
-    out.append(("composicao", "Composição do grupo", {"tipo": "barras", "rotulos": [c for c, _n in cc], "valores": [n for _c, n in cc], "cor": marca.SERIES[2]}))
-
-    out.append(("rede", "Rede de colaboração entre os membros", rede(est, base, grupo)))
-    for _k, titulo, spec in out:
+    for _s, _k, titulo, spec in out:
         spec["titulo"] = titulo
     return out
 

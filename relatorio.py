@@ -61,6 +61,9 @@ tr.total td{font-weight:700;background:#F7F9FB}
 .pessoa img,.pessoa .ini{flex:none;width:52px;height:52px;border-radius:50%%;object-fit:cover}
 .pessoa .ini{display:grid;place-items:center;color:#fff;font-weight:700;font-size:18px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
 .pessoa b{display:block;font-size:13.5px;line-height:1.3}
+.pessoa.grande img,.pessoa.grande .ini{width:96px;height:96px;font-size:30px}
+.pessoa.grande b{font-size:18px}
+.sobre ul{padding-left:18px}.sobre li{margin-bottom:8px}
 .pessoa span{color:var(--mudo);font-size:12px}
 footer{margin-top:48px;padding-top:16px;border-top:1px solid var(--borda);color:var(--mudo);font-size:12.5px;display:flex;gap:14px;align-items:center}
 footer svg{flex:none}
@@ -155,26 +158,52 @@ def autoria():
     return " e ".join(f'<a href="{e(a["gemec"])}">{e(a["nome"])}</a> (<a href="{e(a["linkedin"])}">LinkedIn</a>)' for a in marca.AUTORES)
 
 
-def gerar(est, base, grupo, secoes=None):
+def sobre(ficha, grupo):
+    pf = ficha["perfil"]
+    arq = grupo.foto(ficha["id"])
+    if arq:
+        with open(arq, "rb") as f:
+            rosto = f'<img src="data:image/jpeg;base64,{base64.b64encode(f.read()).decode()}" alt="">'
+    else:
+        rosto = f'<div class="ini" style="background:{marca.SERIES[0]}">{e(n.iniciais(ficha["nome"]))}</div>'
+    h = [f'<div class="sobre"><div class="pessoa grande">{rosto}<div><b>{e(ficha["nome"])}</b><span>{e(ficha["categoria"] or "")}'
+         + (f' · bolsista de produtividade {e(pf["bolsa"])}' if pf.get("bolsa") else "") + f' · <a href="{e(pf.get("link", ""))}">perfil completo</a></span></div></div>']
+    if pf.get("resumo"):
+        h.append(f'<div class="texto"><p>{e(pf["resumo"])}</p></div>')
+    if pf.get("formacao"):
+        h.append("<h3>Formação acadêmica</h3><ul>" + "".join(
+            f'<li><b>{e(f["tipo"])}</b>{" · " + e(f["anos"]) if f.get("anos") else ""}<br><span class="sub">{e(f["instituicao"])}'
+            f'{"<br>" + e(f["titulo"]) if f.get("titulo") else ""}</span></li>' for f in pf["formacao"]) + "</ul>")
+    if pf.get("linhas"):
+        h.append("<h3>Linhas e temas de pesquisa</h3><p>" + e(" · ".join(pf["linhas"])) + "</p>")
+    h.append("</div>")
+    return "".join(h)
+
+
+def gerar(est, base, grupo, secoes=None, ficha=None):
+    """ficha (de nucleo.ficha): relatorio individual de um membro."""
     secoes = set(secoes or [k for k, _t, padrao in SECOES if padrao])
     per = f"{est.a}" if est.a == est.b else f"{est.a} a {est.b}"
     hoje = datetime.date.today()
     corpo = []
     nomes = dict((k, t) for k, t, _p in SECOES)
+    nomes["sobre"] = "Sobre"
 
     def secao(chave, conteudo, sub=""):
         if chave in secoes:
             corpo.append(f'<section id="{chave}"><h2>{e(nomes[chave])}</h2>' + (f'<p class="sub">{e(sub)}</p>' if sub else "") + conteudo + "</section>")
 
+    if ficha and "sobre" in secoes:
+        secao("sobre", sobre(ficha, grupo))
     if "equipe" in secoes:
         secao("equipe", equipe(est, base, grupo), "Quem está neste relatório; os números são do período.")
-    secao("resumo", cartoes(est), f"{n.qt(len(est.sel), 'membro considerado', 'membros considerados')}. Trabalhos que estão no currículo "
+    secao("resumo", cartoes(est), ("Números do membro no período. " if ficha else f"{n.qt(len(est.sel), 'membro considerado', 'membros considerados')}. ") + "Trabalhos que estão no currículo "
           "de mais de um membro contam uma vez. Orientações em andamento e projetos contam os que estavam ativos em algum momento do período.")
     if "indicadores" in secoes:
         secao("indicadores", _tabela(*n.tabela_indicadores(est, base, grupo), numericas=set()))
     if "graficos" in secoes:
         figs = []
-        for chave, titulo, spec in n.graficos(est, base, grupo):
+        for _secao, chave, titulo, spec in n.graficos(est, base, grupo):
             if chave not in GRAFICOS_RELATORIO:
                 continue
             vazio = (spec["tipo"] == "barras" and not spec["valores"]) or (spec["tipo"] == "rede" and not spec["nos"]) or \
@@ -207,11 +236,11 @@ def gerar(est, base, grupo, secoes=None):
 
     return f"""<!doctype html>
 <html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Relatório {e(grupo.nome)} {e(per)}</title>
+<title>Relatório {e(ficha["nome"] if ficha else grupo.nome)} {e(per)}</title>
 <link rel="icon" href="data:image/svg+xml,{e(marca.logo_svg(64)).replace('#', '%23')}">
 <style>{CSS}</style></head><body>
-<header><div class="pagina">{marca.logo_svg(64)}<div><div class="marca">{e(marca.NOME)} · relatório do grupo</div>
-<h1>{e(grupo.nome)}</h1><p>Período {e(per)} · gerado em {hoje:%d/%m/%Y} · dados do Currículo Lattes</p></div></div></header>
+<header><div class="pagina">{marca.logo_svg(64)}<div><div class="marca">{e(marca.NOME)} · {"relatório individual" if ficha else "relatório do grupo"}</div>
+<h1>{e(ficha["nome"] if ficha else grupo.nome)}</h1><p>{("Membro do grupo " + e(grupo.nome) + " · ") if ficha else ""}Período {e(per)} · gerado em {hoje:%d/%m/%Y} · dados do Currículo Lattes e do OpenAlex</p></div></div></header>
 <main class="pagina">{''.join(corpo)}
 <footer>{marca.logo_svg(28)}<div>Gerado pelo <strong>{e(marca.NOME)}</strong> {e(marca.VERSAO)}, de {autoria()}
 ({e(marca.INSTITUICAO)}). Dados dos Currículos Lattes (CNPq), processados pelo scriptLattes

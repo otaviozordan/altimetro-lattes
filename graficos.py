@@ -93,15 +93,19 @@ def _colunas(spec, w, h, k):
     for i, c in enumerate(cats):
         x0 = esq + i * larg + (larg - barra) / 2
         y_atual = base
-        segs = [(s[0], s[1][i], cores[j % len(cores)]) for j, s in enumerate(series)]
+        segs = [(s[0], s[1][i], cores[j % len(cores)], j) for j, s in enumerate(series)]
         visiveis = [sg for sg in segs if sg[1]]
-        for j, (nome, v, cor) in enumerate(visiveis):
+        for j, (nome, v, cor, js) in enumerate(visiveis):
             alt = (base - topo - 14 * k) * v / teto
             y0 = y_atual - alt
             ultimo = j == len(visiveis) - 1
             gap = 2 * k if not ultimo else 0  # 2px de fundo entre os segmentos
             dica = f"{c} · {nome}: {_num(v)}" if len(series) > 1 else f"{c}: {_num(v)}"
-            out.append(("bar", x0, y0 + gap, x0 + barra, y_atual, cor, 4 * k if ultimo else 0, dica))
+            ref = None
+            if spec.get("filtros") and js < len(spec["filtros"]):
+                ref = dict(spec["filtros"][js])
+                ref[ref.pop("_ano", "ano")] = c  # o ano clicado
+            out.append(("bar", x0, y0 + gap, x0 + barra, y_atual, cor, 4 * k if ultimo else 0, dica, ref))
             y_atual = y0
         if rotular and totais[i]:
             out.append(("text", x0 + barra / 2, y_atual - 9 * k, _num(totais[i]), "c", 10 * k, TXT, True))
@@ -122,12 +126,13 @@ def _barras(spec, w, h, k):
     linha = (base - topo) / n
     barra = max(4 * k, min(22 * k, linha * 0.66))
     maior = max(val + [1])
+    refs = spec.get("refs") or [None] * len(rot)
     for i, (r, v) in enumerate(zip(rot, val)):
         y = topo + i * linha + linha / 2
         out.append(("text", esq - 10 * k, y, _cortar(r, maxc), "e", tam, TXT, False, str(r)))
         x1 = esq + (w - esq - dir_) * v / maior
         if v:
-            out.append(("hbar", esq, y - barra / 2, x1, y + barra / 2, spec.get("cor", marca.SERIES[0]), 4 * k, f"{r}: {_num(v)}"))
+            out.append(("hbar", esq, y - barra / 2, x1, y + barra / 2, spec.get("cor", marca.SERIES[0]), 4 * k, f"{r}: {_num(v)}", refs[i]))
         out.append(("text", x1 + 8 * k, y, _num(v), "w", 10 * k, TXT, True))
     out.insert(0, ("line", esq, topo, esq, base, EIXO, 1))
     return out
@@ -158,7 +163,7 @@ def _rede(spec, w, h, k):
         x, yy = P[i]
         r = (5 + 15 * math.sqrt(peso / maior_n)) * k
         cor = marca.SERIES[grupos.index(g) % len(marca.SERIES)] if g in grupos else marca.SERIES[0]
-        out.append(("circle", x, yy, r, cor, f"{nome}: {_num(peso)} trabalhos, {_num(grau.get(i, 0))} em parceria no grupo"))
+        out.append(("circle", x, yy, r, cor, f"{nome}: {_num(peso)} trabalhos, {_num(grau.get(i, 0))} em parceria no grupo", {"membro_ficha": i}))
         if i in rotulados:
             curto = " ".join(nome.split()[:1] + nome.split()[-1:]) if len(nome.split()) > 1 else nome
             out.append(("text", x, yy + r + 9 * k, curto, "c", 10 * k, TXT, False))
@@ -168,7 +173,8 @@ def _rede(spec, w, h, k):
 # --------------------------------------------------------------- Tk Canvas
 
 def desenhar(canvas, spec, k=1.0):
-    """Desenha no Canvas e devolve as areas de dica [(x0,y0,x1,y1,texto)]."""
+    """Desenha no Canvas e devolve as areas de dica [(x0,y0,x1,y1,texto,ref)];
+    ref diz a que itens a barra se refere (None: nao clicavel)."""
     canvas.delete("all")
     w, h = canvas.winfo_width(), canvas.winfo_height()
     if w < 80 or h < 80 or not spec:
@@ -184,15 +190,15 @@ def desenhar(canvas, spec, k=1.0):
         elif t in ("bar", "hbar"):
             x0, y0, x1, y1, cor, r, dica = p[1:8]
             _ret_arredondado(canvas, x0, y0, x1, y1, cor, r, "topo" if t == "bar" else "dir")
-            dicas.append((min(x0, x1) - 2, min(y0, y1) - 4, max(x0, x1) + 2, max(y0, y1), dica))
+            dicas.append((min(x0, x1) - 2, min(y0, y1) - 4, max(x0, x1) + 2, max(y0, y1), dica, p[8] if len(p) > 8 else None))
         elif t == "circle":
             x, y, r, cor, dica = p[1:6]
             canvas.create_oval(x - r, y - r, x + r, y + r, fill=cor, outline="white", width=2)
-            dicas.append((x - r, y - r, x + r, y + r, dica))
+            dicas.append((x - r, y - r, x + r, y + r, dica, p[6] if len(p) > 6 else None))
         elif t == "text":
             canvas.create_text(p[1], p[2], text=p[3], anchor=anc[p[4]], font=(FONTE, -int(p[5] * 1.0), "bold" if p[7] else "normal"), fill=p[6])
             if len(p) > 8 and p[8] != p[3]:
-                dicas.append((p[1] - 300 if p[4] == "e" else p[1], p[2] - 8, p[1], p[2] + 8, p[8]))
+                dicas.append((p[1] - 300 if p[4] == "e" else p[1], p[2] - 8, p[1], p[2] + 8, p[8], None))
     return dicas
 
 

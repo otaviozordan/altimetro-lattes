@@ -11,18 +11,22 @@ Windows · macOS · Linux · software livre (GPL-3.0)</p>
 
 O Altímetro levanta, em poucos cliques, os números de um grupo de pesquisa para relatórios, editais, avaliações da CAPES e prestação de contas: produção bibliográfica e técnica, orientações, projetos, prêmios, bancas, eventos e a colaboração entre os membros, em qualquer período.
 
-Você só informa o **ID Lattes** de cada membro. O programa baixa os currículos públicos, processa tudo com o [scriptLattes](https://github.com/jpmenachalco/scriptLattes) e mostra o resultado numa janela, com gráficos, tabelas e relatório pronto.
+Você só informa o **ID Lattes** de cada membro. O programa baixa os currículos públicos, processa tudo com o [scriptLattes](https://github.com/jpmenachalco/scriptLattes) e mostra o resultado numa janela, com gráficos, tabelas e relatório pronto. Para quem não tem Lattes (um pesquisador estrangeiro, por exemplo), basta o **ORCID**: a produção vem do [OpenAlex](https://openalex.org).
 
 ## O que ele faz
 
-- **Equipe:** quem está no grupo, com a foto do Lattes e os números de cada pessoa no período. Um clique abre a ficha individual, com a produção por ano e as parcerias dentro do grupo.
+- **Equipe:** quem está no grupo, com a foto do Lattes e os números de cada pessoa no período, e o botão para adicionar membros.
+- **Página de cada membro:** visão geral (números clicáveis, produção por ano, parcerias no grupo), perfil (resumo, formação, linhas de pesquisa, áreas, idiomas) e as listas de publicações, eventos, orientações, projetos e outros. Exporta para Excel e gera um relatório individual.
 - **Resumo:** artigos, trabalhos em eventos, livros e capítulos, orientações, projetos, produção técnica, prêmios, bancas e eventos, com a comparação com o período anterior de mesma duração ("▲ 30% vs 2017–2021").
 - **Indicadores:** artigos por docente por ano, orientações por docente, colaboração interna (artigos com dois ou mais membros), artigos com DOI, membros com produção, periódicos distintos e projetos coordenados pelo grupo.
-- **Gráficos:**
-  - por ano: produção, artigos, orientações por nível, projetos ativos e produção técnica;
-  - por pessoa e categoria: artigos por membro e produção por categoria de membro;
-  - periódicos e eventos mais frequentes;
-  - composição do grupo e rede de colaboração entre os membros.
+- **Gráficos clicáveis:** clique numa barra para ver os itens a que ela se refere (os artigos de 2023, as orientações de doutorado, os trabalhos de uma parceria...), com exportação. Organizados como a página de estatísticas de um grupo:
+  - **Publicações:** por ano, artigos por ano, por membro, periódicos mais frequentes, por tipo;
+  - **Orientações:** por nível, concluídas por ano, em andamento;
+  - **Projetos:** iniciados por ano, ativos por ano;
+  - **Produção técnica e artística:** por tipo e por ano;
+  - **Eventos:** por ano, participações por tipo de evento, eventos mais frequentes;
+  - **Prêmios e bancas**, **Membros** (produção por categoria, composição do grupo);
+  - **Colaboração:** rede entre os membros, parcerias mais frequentes, membros mais conectados.
 
   Todos podem ser salvos em PNG ou SVG.
 - **Tabelas:** por ano, por membro, orientações, projetos, periódicos e eventos. Um clique no cabeçalho ordena, e o botão direito copia (cola direto no Excel ou no Word).
@@ -66,16 +70,20 @@ Também dá para rodar à mão: `python3 iniciar.py`. Para reinstalar as bibliot
 ## Como usar
 
 1. **Novo grupo** (no alto) e dê o nome do grupo.
-2. Em **Gerenciar membros**, cole os IDs Lattes (16 dígitos) ou os links `http://lattes.cnpq.br/...`, um por linha, escolha a categoria e clique em **Adicionar**. O nome e a foto de cada pessoa vêm do próprio currículo.
+2. Em **Equipe → + Adicionar membro** (ou em **Gerenciar membros**), cole os IDs Lattes (16 dígitos) ou os links `http://lattes.cnpq.br/...`, um por linha, e escolha a categoria. Para quem não tem Lattes, cole o ORCID (`0000-0002-1825-0097`). O nome e a foto vêm do próprio currículo.
 3. Clique em **Atualizar tudo**. O download leva uns 20 segundos por currículo, e a janela fica livre enquanto isso.
 4. Escolha o **período** e as **categorias** no alto e navegue pelas abas.
 5. **Salvar relatório** gera o HTML; **Exportar Excel** gera a planilha.
 
 Para atualizar depois, use **Atualizar tudo** (baixa todos de novo) ou **Baixar só os novos**.
 
+### Chave do OpenAlex (opcional)
+
+Os membros cadastrados pelo ORCID vêm do OpenAlex, que funciona sem cadastro, mas divide uma cota diária entre todos que usam a mesma rede. Para não esbarrar nela, crie uma chave gratuita em [openalex.org/settings/api](https://openalex.org/settings/api) e cole em **Gerenciar membros → Chave do OpenAlex**.
+
 ## Privacidade
 
-O Altímetro usa apenas dados **públicos** do Currículo Lattes. Tudo fica no seu computador, na pasta `grupos/`: currículos, fotos, relatórios e a lista de membros. Nada é enviado para servidor nenhum. A pasta `grupos/` está no `.gitignore`, para não ir parar num repositório por engano.
+O Altímetro usa apenas dados **públicos** do Currículo Lattes e do OpenAlex. Tudo fica no seu computador, na pasta `grupos/`: currículos, fotos, relatórios e a lista de membros. Nada é enviado para servidor nenhum. A pasta `grupos/` está no `.gitignore`, para não ir parar num repositório por engano.
 
 ## Estrutura
 
@@ -101,18 +109,6 @@ Autoria:
 Feito no [GEMEC](https://gemec.unifei.edu.br), da UNIFEI (Universidade Federal de Itajubá).
 
 O Altímetro é software livre, sob a [GNU General Public License v3.0](LICENSE): você pode usar, estudar, modificar e redistribuir, mantendo a mesma licença.
-
-A pasta `scriptLattes/` traz o **scriptLattes** de Jesús P. Mena-Chalco e Roberto M. Cesar-Jr. (GPL-2.0 ou posterior). Se usar o Altímetro num trabalho acadêmico, cite também o scriptLattes:
-
-> Mena-Chalco, J. P.; Cesar-Jr., R. M. *scriptLattes: an open-source knowledge extraction system from the Lattes Platform*. Journal of the Brazilian Computer Society, v. 15, n. 4, p. 31–39, 2009.
-
-A cópia incluída tem pequenas alterações, marcadas no código com `# Altimetro:`:
-- usa o Selenium Manager quando não há `chromedriver` na pasta;
-- lê os arquivos `.config` e `.list` em UTF-8;
-- é compatível com o networkx 3.4 ou mais novo;
-- tira telefone e fax do endereço profissional nas páginas geradas.
-
-Os dados vêm da Plataforma Lattes (CNPq). O Altímetro não tem vínculo com o CNPq.
 
 ## Contribuir
 

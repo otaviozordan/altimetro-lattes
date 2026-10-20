@@ -39,6 +39,8 @@ def interface():
     try:  # texto nitido em telas com escala (Windows)
         import ctypes
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        # Identidade propria: a barra de tarefas mostra a logo do Altimetro, nao a do Python.
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Altimetro.MetricasLattes")
     except Exception:  # noqa: BLE001
         pass
 
@@ -121,8 +123,10 @@ def interface():
         def __init__(self, pai, **kw):
             super().__init__(pai, bg=CARTAO, highlightthickness=0, **kw)
             self.spec, self.dicas = None, []
+            self.ao_clicar = None  # funcao(ref): o que fazer ao clicar numa barra
             self.bind("<Configure>", lambda e: self.redesenhar())
             self.bind("<Motion>", self._mover)
+            self.bind("<Button-1>", self._clicar)
             self.bind("<Leave>", lambda e: self.delete("dica"))
 
         def mostrar(self, spec):
@@ -137,16 +141,246 @@ def interface():
 
         def _mover(self, e):
             self.delete("dica")
-            for x0, y0, x1, y1, txt in self.dicas:
-                if x0 <= e.x <= x1 and y0 <= e.y <= y1:
-                    t = self.create_text(e.x + 14, e.y - 16, text=txt, anchor="w", fill="white", font=(FONTE, 10, "bold"), tags="dica")
-                    bx = self.bbox(t)
-                    if bx[2] > self.winfo_width() - 4:
-                        self.move(t, -(bx[2] - bx[0]) - 28, 0)
-                        bx = self.bbox(t)
-                    r = self.create_rectangle(bx[0] - 8, bx[1] - 4, bx[2] + 8, bx[3] + 4, fill=TINTA, outline="", tags="dica")
-                    self.tag_raise(t, r)
-                    return
+            d = self._achar(e)
+            clicavel = bool(d and d[5] and self.ao_clicar)
+            self.configure(cursor="hand2" if clicavel else "")
+            if not d:
+                return
+            txt = d[4] + ("  ·  clique para ver" if clicavel else "")
+            t = self.create_text(e.x + 14, e.y - 16, text=txt, anchor="w", fill="white", font=(FONTE, 10, "bold"), tags="dica")
+            bx = self.bbox(t)
+            if bx[2] > self.winfo_width() - 4:
+                self.move(t, -(bx[2] - bx[0]) - 28, 0)
+                bx = self.bbox(t)
+            r = self.create_rectangle(bx[0] - 8, bx[1] - 4, bx[2] + 8, bx[3] + 4, fill=TINTA, outline="", tags="dica")
+            self.tag_raise(t, r)
+
+        def _achar(self, e):
+            for d in self.dicas:
+                if d[0] <= e.x <= d[2] and d[1] <= e.y <= d[3]:
+                    return d
+            return None
+
+        def _clicar(self, e):
+            d = self._achar(e)
+            if d and d[5] and self.ao_clicar:
+                self.ao_clicar(d[5], d[4])
+
+    def abrir_item(linha):
+        """Duplo clique numa linha de item: abre o DOI, se houver."""
+        doi = linha[5] if len(linha) > 5 else ""
+        if doi:
+            webbrowser.open("https://doi.org/" + doi)
+
+    def exportar_planilha(janela, nome, abas):
+        caminho = filedialog.asksaveasfilename(parent=janela, title="Exportar para Excel", defaultextension=".xlsx",
+                                               initialfile=re.sub(r'[\\/:*?"<>|]+', "", nome) + ".xlsx",
+                                               initialdir=janela._root()._pasta_rel(), filetypes=[("Planilha do Excel", "*.xlsx")])
+        if not caminho:
+            return
+        try:
+            n.salvar_excel(caminho, abas)
+        except PermissionError:
+            messagebox.showerror("Exportar", "Não deu para salvar: a planilha está aberta no Excel?", parent=janela)
+            return
+        if messagebox.askyesno("Exportar", "Planilha salva. Abrir agora?", parent=janela):
+            n.abrir(caminho)
+
+    class ListaItens(tk.Toplevel):
+        """Os itens por tras de uma barra de grafico (ou de qualquer filtro)."""
+
+        def __init__(self, app, titulo, itens):
+            super().__init__(app)
+            self.app = app
+            self.title(titulo)
+            self.configure(bg=CARTAO, padx=18, pady=14)
+            self.geometry(f"{app.px(1100)}x{app.px(560)}")
+            self.transient(app)
+            per = f"{app.est.a}" if app.est.a == app.est.b else f"{app.est.a}–{app.est.b}"
+            cab = tk.Frame(self, bg=CARTAO)
+            cab.pack(fill="x")
+            tk.Label(cab, text=titulo, font=(FONTE, 13, "bold"), bg=CARTAO, fg=MARINHO).pack(side="left")
+            self.cab, self.linhas = n.tabela_de(app.est, app.base, itens)
+            ttk.Button(cab, text="Exportar Excel", command=lambda: exportar_planilha(self, f"{titulo} {per}", [("Itens", self.cab, self.linhas)])).pack(side="right")
+            ttk.Button(cab, text="Copiar", command=lambda: self.t.copiar()).pack(side="right", padx=6)
+            tk.Label(self, text=f"{n.qt(len(itens), 'item', 'itens')} · {app.grupo.nome} · {per} · duplo clique abre o DOI",
+                     font=(FONTE, 9), bg=CARTAO, fg=MUDO).pack(anchor="w", pady=(2, 8))
+            self.t = Tabela(self)
+            self.t.pack(fill="both", expand=True)
+            self.t.mostrar(self.cab, self.linhas, [190, 55, 440, 280, 240, 150, 220])
+            self.t.tv.bind("<Double-1>", lambda e: self._abrir())
+            self.bind("<Escape>", lambda e: self.destroy())
+
+        def _abrir(self):
+            for s in self.t.tv.selection()[:3]:
+                abrir_item(self.t.linhas[self.t.tv.index(s)])
+
+    class ListaPessoas(tk.Toplevel):
+        def __init__(self, app, titulo, pessoas):
+            super().__init__(app)
+            self.app = app
+            self.title(titulo)
+            self.configure(bg=CARTAO, padx=18, pady=14)
+            self.geometry(f"{app.px(520)}x{app.px(460)}")
+            self.transient(app)
+            tk.Label(self, text=titulo, font=(FONTE, 13, "bold"), bg=CARTAO, fg=MARINHO).pack(anchor="w")
+            tk.Label(self, text="Duplo clique abre a ficha.", font=(FONTE, 9), bg=CARTAO, fg=MUDO).pack(anchor="w", pady=(2, 8))
+            self.ids = [i for _n, i in pessoas]
+            t = Tabela(self)
+            t.pack(fill="both", expand=True)
+            t.mostrar(["Membro"], [[nome] for nome, _i in pessoas], [420])
+            t.tv.bind("<Double-1>", lambda e: [app._ficha(self.ids[t.tv.index(s)]) for s in t.tv.selection()[:1]])
+
+    class Ficha(tk.Toplevel):
+        """Pagina do membro: visao geral, sobre (perfil do Lattes) e as listas, com exportacao."""
+
+        def __init__(self, app, lid):
+            super().__init__(app)
+            self.app, self.lid = app, lid
+            fx = self.fx = n.ficha(app.est, app.base, app.grupo, lid)
+            pf = fx["perfil"]
+            per = self.per = f"{app.est.a}" if app.est.a == app.est.b else f"{app.est.a}–{app.est.b}"
+            self.title(fx["nome"])
+            self.configure(bg=CARTAO)
+            self.geometry(f"{app.px(1040)}x{app.px(720)}")
+            self.transient(app)
+
+            topo = tk.Frame(self, bg=CARTAO, padx=22, pady=16)
+            topo.pack(fill="x")
+            foto = app._foto(lid, fx["nome"], 96)
+            if foto:
+                tk.Label(topo, image=foto, bg=CARTAO).pack(side="left", padx=(0, 18))
+            info = tk.Frame(topo, bg=CARTAO)
+            info.pack(side="left", fill="x", expand=True)
+            tk.Label(info, text=fx["nome"], font=(FONTE, 18, "bold"), bg=CARTAO, fg=MARINHO, anchor="w").pack(anchor="w")
+            tk.Label(info, text=f"{fx['categoria'] or 'Sem categoria'} · {app.grupo.nome} · período {per}", font=(FONTE, 10), bg=CARTAO, fg=MUDO).pack(anchor="w")
+            extra = " · ".join(x for x in ((f"Bolsista de produtividade {pf['bolsa']}" if pf.get("bolsa") else ""),
+                                            (f"Dados: {pf.get('fonte')}" if pf.get("fonte") else ""),
+                                            (f"atualizado em {pf['atualizado']}" if pf.get("atualizado") else "")) if x)
+            if extra:
+                tk.Label(info, text=extra, font=(FONTE, 9), bg=CARTAO, fg=MUDO).pack(anchor="w", pady=(2, 0))
+            bts = tk.Frame(topo, bg=CARTAO)
+            bts.pack(side="right", anchor="n")
+            ttk.Button(bts, text="Relatório individual", style="Acento.TButton", command=self._relatorio).pack(side="right")
+            ttk.Button(bts, text="Exportar Excel", command=self._excel).pack(side="right", padx=6)
+            ttk.Button(bts, text="Abrir no ORCID" if n.e_orcid(lid) else "Abrir no Lattes",
+                       command=lambda: webbrowser.open(n.link_perfil(lid))).pack(side="right")
+
+            self.nb = ttk.Notebook(self, style="Sub.TNotebook")
+            self.nb.pack(fill="both", expand=True, padx=16, pady=(0, 14))
+            self.abas = {}
+            self._visao_geral()
+            self._sobre()
+            for titulo, sub, itens in fx["listas"]:
+                fr = ttk.Frame(self.nb, style="Cartao.TFrame", padding=(10, 10, 10, 6))
+                self.nb.add(fr, text=f"{titulo} ({len(itens)})")
+                self.abas[titulo] = fr
+                tk.Label(fr, text=f"{sub} · duplo clique abre o DOI", font=(FONTE, 9), bg=CARTAO, fg=MUDO).pack(anchor="w", pady=(0, 6))
+                t = Tabela(fr)
+                t.pack(fill="both", expand=True)
+                cab, linhas = n.tabela_de(app.est, app.base, itens)
+                t.mostrar(cab, linhas, [180, 55, 420, 260, 220, 150, 200])
+                t.tv.bind("<Double-1>", lambda e, t=t: [abrir_item(t.linhas[t.tv.index(s)]) for s in t.tv.selection()[:3]])
+            self.bind("<Escape>", lambda e: self.destroy())
+
+        def _visao_geral(self):
+            fx, app = self.fx, self.app
+            fr = tk.Frame(self.nb, bg=CARTAO, padx=10, pady=10)
+            self.nb.add(fr, text="Visão geral")
+            nums = tk.Frame(fr, bg=CARTAO)
+            nums.pack(fill="x")
+            for i, (rot, v, alvo) in enumerate(fx["numeros"]):
+                c = tk.Frame(nums, bg=CARTAO, highlightthickness=1, highlightbackground=BORDA, padx=10, pady=6, cursor="hand2")
+                c.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 8, 0))
+                nums.columnconfigure(i, weight=1, uniform="f")
+                a = tk.Label(c, text=n.num(v), font=(FONTE, 16, "bold"), bg=CARTAO, fg=TINTA)
+                a.pack(anchor="w")
+                b = tk.Label(c, text=rot, font=(FONTE, 9), bg=CARTAO, fg=MUDO, justify="left")
+                b.pack(anchor="w")
+                c.bind("<Configure>", lambda e, b=b: b.configure(wraplength=e.width - 22))
+                for w in (c, a, b):
+                    w.bind("<Button-1>", lambda e, alvo=alvo: self.nb.select(self.abas[alvo]))
+                    w.bind("<Enter>", lambda e, c=c: c.configure(highlightbackground=ACENTO))
+                    w.bind("<Leave>", lambda e, c=c: c.configure(highlightbackground=BORDA))
+            baixo = tk.Frame(fr, bg=CARTAO, pady=12)
+            baixo.pack(fill="both", expand=True)
+            baixo.columnconfigure(0, weight=3)
+            baixo.columnconfigure(1, weight=2)
+            baixo.rowconfigure(1, weight=1)
+            tk.Label(baixo, text="Produção bibliográfica por ano (clique numa barra)", font=(FONTE, 10, "bold"), bg=CARTAO).grid(row=0, column=0, sticky="w")
+            g = Grafico(baixo)
+            g.grid(row=1, column=0, sticky="nsew", pady=(4, 0))
+            g.ao_clicar = lambda ref, dica: ListaItens(app, f"{fx['nome']} · {dica.split(':')[0]}", n.itens_filtro(app.est, ref))
+            g.mostrar(fx["grafico"])
+            tk.Label(baixo, text="Parcerias no grupo (duplo clique abre a ficha)", font=(FONTE, 10, "bold"), bg=CARTAO).grid(row=0, column=1, sticky="w", padx=(20, 0))
+            t = Tabela(baixo, altura=8)
+            t.grid(row=1, column=1, sticky="nsew", padx=(20, 0), pady=(4, 0))
+            ids = [x[2] for x in fx["parceiros"]]
+            t.mostrar(["Membro", "Trabalhos juntos"], [[x[0], x[1]] for x in fx["parceiros"]], [220, 110])
+            t.tv.bind("<Double-1>", lambda e: [app._ficha(ids[t.tv.index(s)]) for s in t.tv.selection()[:1]])
+            if not ids:
+                t.tv.insert("", "end", values=["Sem trabalhos com outros membros no período", ""])
+
+        def _sobre(self):
+            pf = self.fx["perfil"]
+            fr = tk.Frame(self.nb, bg=CARTAO, padx=6, pady=6)
+            self.nb.add(fr, text="Sobre")
+            tx = tk.Text(fr, wrap="word", relief="flat", bg=CARTAO, fg=TINTA, font=(FONTE, 10), padx=12, pady=10, spacing1=2, spacing3=4)
+            sb = ttk.Scrollbar(fr, orient="vertical", command=tx.yview)
+            tx.configure(yscrollcommand=sb.set)
+            sb.pack(side="right", fill="y")
+            tx.pack(fill="both", expand=True)
+            tx.tag_configure("h", font=(FONTE, 11, "bold"), foreground=MARINHO, spacing1=12, spacing3=4)
+            tx.tag_configure("m", foreground=MUDO)
+            tx.tag_configure("link", foreground=ACENTO, underline=True)
+            tx.tag_bind("link", "<Button-1>", lambda e: webbrowser.open(pf.get("link") or n.link_perfil(self.lid)))
+            tx.tag_bind("link", "<Enter>", lambda e: tx.configure(cursor="hand2"))
+            tx.tag_bind("link", "<Leave>", lambda e: tx.configure(cursor=""))
+
+            def secao(titulo, linhas):
+                linhas = [x for x in linhas if x]
+                if linhas:
+                    tx.insert("end", titulo + "\n", "h")
+                    for x in linhas:
+                        if isinstance(x, tuple):
+                            tx.insert("end", x[0])
+                            tx.insert("end", x[1] + "\n", "m")
+                        else:
+                            tx.insert("end", x + "\n")
+            secao("Resumo", [pf.get("resumo") or ("Sem resumo: os dados deste membro vêm do OpenAlex (ORCID)." if n.e_orcid(self.lid) else "")])
+            secao("Formação acadêmica", [(f"{f['tipo']}" + (f" · {f['anos']}" if f.get("anos") else ""),
+                                          "\n   " + f["instituicao"] + (f"\n   {f['titulo']}" if f.get("titulo") else "")) for f in pf.get("formacao") or []])
+            secao("Temas de pesquisa" if n.e_orcid(self.lid) else "Linhas de pesquisa", ["• " + x for x in pf.get("linhas") or []])
+            secao("Áreas de atuação", ["• " + x for x in pf.get("areas") or []])
+            secao("Idiomas", ["• " + x for x in pf.get("idiomas") or []])
+            secao("Vínculo" if n.e_orcid(self.lid) else "Endereço profissional", [pf.get("endereco", "")])
+            tx.insert("end", "Perfil completo\n", "h")
+            tx.insert("end", pf.get("link") or n.link_perfil(self.lid), "link")
+            tx.configure(state="disabled")
+
+        def _excel(self):
+            fx, app = self.fx, self.app
+            pf = fx["perfil"]
+            perfil = [["Nome", fx["nome"]], ["Categoria", fx["categoria"]], ["Grupo", app.grupo.nome], ["Período", self.per],
+                      ["Perfil", pf.get("link", "")], ["Dados", pf.get("fonte", "")], ["Atualizado em", pf.get("atualizado", "")], ["", ""]]
+            perfil += [[rot, v] for rot, v, _a in fx["numeros"]]
+            abas = [("Perfil", ["Campo", "Valor"], perfil)]
+            for titulo, _sub, itens in fx["listas"]:
+                abas.append((titulo,) + n.tabela_de(app.est, app.base, itens))
+            abas.append(("Parcerias", ["Membro", "Trabalhos juntos"], [[x[0], x[1]] for x in fx["parceiros"]]))
+            exportar_planilha(self, f"{fx['nome']} {app.est.a}-{app.est.b}", abas)
+
+        def _relatorio(self):
+            app = self.app
+            est = n.com_anterior(app.base, [self.lid], app.est.a, app.est.b)
+            html = relatorio.gerar(est, app.base, app.grupo, ["sobre", "resumo", "graficos", "por_ano", "orientacoes", "projetos", "veiculos", "itens"],
+                                   ficha=self.fx)
+            nome = re.sub(r"[^\w\- ]+", "", f"{self.fx['nome']} {app.est.a}-{app.est.b}").strip()
+            caminho = os.path.join(app._pasta_rel(), f"Relatório individual {nome} ({datetime.datetime.now():%Y-%m-%d %Hh%M}).html")
+            with open(caminho, "w", encoding="utf-8") as f:
+                f.write(html)
+            app._listar_relatorios()
+            webbrowser.open(pathlib.Path(caminho).as_uri())
 
     class App(tk.Tk):
         def __init__(self):
@@ -207,9 +441,8 @@ def interface():
                     marca.gerar_arquivos()
                 if SISTEMA == "Windows":
                     self.iconbitmap(default=ico)
-                else:
-                    self._icone_png = tk.PhotoImage(file=marca.arquivo(256))
-                    self.iconphoto(True, self._icone_png)
+                self._icone_png = [tk.PhotoImage(file=marca.arquivo(t)) for t in (256, 64, 32)]
+                self.iconphoto(True, *self._icone_png)
             except Exception:  # noqa: BLE001
                 pass
             self._fotos = {}
@@ -368,7 +601,8 @@ def interface():
             dir_.pack_propagate(False)
             wl = self.px(330)
             ttk.Label(dir_, text="Adicionar membros", style="Secao.TLabel").pack(anchor="w")
-            ttk.Label(dir_, text="Cole os IDs Lattes (16 dígitos) ou os links, um por linha. O nome vem do currículo.",
+            ttk.Label(dir_, text="Cole os IDs Lattes (16 dígitos) ou os links, um por linha. Sem Lattes (estrangeiros): use o ORCID, "
+                      "e os dados vêm do OpenAlex. O nome vem do currículo.",
                       style="MudoCartao.TLabel", wraplength=wl, justify="left").pack(anchor="w", pady=(2, 6))
             self.tx_ids = tk.Text(dir_, height=6, width=36, relief="flat", font=(FONTE, 10), bg="#F7F9FB",
                                   highlightthickness=1, highlightbackground=BORDA, highlightcolor=ACENTO, padx=8, pady=6)
@@ -390,9 +624,16 @@ def interface():
             ttk.Button(l2, text="Mudar categoria", command=self._mudar_categoria).pack(side="right")
             l3 = ttk.Frame(dir_, style="Cartao.TFrame")
             l3.pack(fill="x", pady=(6, 0))
-            ttk.Button(l3, text="Abrir no Lattes", command=self._abrir_lattes).pack(side="left", fill="x", expand=True)
+            ttk.Button(l3, text="Abrir perfil", command=self._abrir_lattes).pack(side="left", fill="x", expand=True)
             ttk.Button(l3, text="Remover do grupo", command=self._remover).pack(side="left", fill="x", expand=True, padx=(6, 0))
             ttk.Button(dir_, text="Trocar a foto…", command=self._trocar_foto).pack(fill="x", pady=(6, 0))
+            l6 = ttk.Frame(dir_, style="Cartao.TFrame")
+            l6.pack(fill="x", pady=(10, 0))
+            ttk.Label(l6, text="Chave do OpenAlex (opcional)", style="MudoCartao.TLabel").pack(anchor="w")
+            self.v_chave = tk.StringVar(value=self.pref.get("openalex_chave", ""))
+            e = ttk.Entry(l6, textvariable=self.v_chave, show="•")
+            e.pack(fill="x", pady=(2, 0))
+            self.v_chave.trace_add("write", lambda *a: self._salvar_chave())
 
             ttk.Separator(dir_).pack(fill="x", pady=14)
             ttk.Label(dir_, text="Currículos e estatísticas", style="Secao.TLabel").pack(anchor="w")
@@ -422,8 +663,9 @@ def interface():
             cab.pack(fill="x")
             self.lb_equipe = ttk.Label(cab, text="Equipe", style="Secao.TLabel")
             self.lb_equipe.pack(side="left")
+            ttk.Button(cab, text="+ Adicionar membro", style="Acento.TButton", command=self._dialogo_adicionar).pack(side="right")
             self.v_busca_eq = tk.StringVar()
-            ttk.Entry(cab, textvariable=self.v_busca_eq, width=28).pack(side="right")
+            ttk.Entry(cab, textvariable=self.v_busca_eq, width=28).pack(side="right", padx=(0, 16))
             ttk.Label(cab, text="Buscar", style="Cartao.TLabel").pack(side="right", padx=8)
             self.v_busca_eq.trace_add("write", lambda *a: self._agendar(self._mostrar_equipe, 200))
             ttk.Label(f, text="Quem está nas estatísticas, com os números do período. Clique em uma pessoa para ver a ficha.",
@@ -558,49 +800,50 @@ def interface():
             return card
 
         def _ficha(self, lid):
-            if not self.est:
-                return
-            fx = n.ficha(self.est, self.base, self.grupo, lid)
+            if self.est:
+                Ficha(self, lid)
+
+        def _dialogo_adicionar(self):
+            if not self.grupo:
+                self._novo_grupo()
+                if not self.grupo:
+                    return
             j = tk.Toplevel(self)
-            j.title(fx["nome"])
-            j.configure(bg=CARTAO)
-            j.geometry(f"{self.px(860)}x{self.px(620)}")
+            j.title("Adicionar membros")
+            j.configure(bg=CARTAO, padx=22, pady=18)
             j.transient(self)
-            topo = tk.Frame(j, bg=CARTAO, padx=22, pady=18)
-            topo.pack(fill="x")
-            foto = self._foto(lid, fx["nome"], 96)
-            if foto:
-                tk.Label(topo, image=foto, bg=CARTAO).pack(side="left", padx=(0, 18))
-            info = tk.Frame(topo, bg=CARTAO)
-            info.pack(side="left", fill="x", expand=True)
-            tk.Label(info, text=fx["nome"], font=(FONTE, 17, "bold"), bg=CARTAO, fg=MARINHO, anchor="w").pack(anchor="w")
-            per = f"{self.est.a}" if self.est.a == self.est.b else f"{self.est.a}–{self.est.b}"
-            tk.Label(info, text=f"{fx['categoria'] or 'Sem categoria'} · {self.grupo.nome} · período {per}", font=(FONTE, 10), bg=CARTAO, fg=MUDO).pack(anchor="w")
-            if fx["atualizado"]:
-                tk.Label(info, text=f"Currículo Lattes atualizado em {fx['atualizado']}", font=(FONTE, 9), bg=CARTAO, fg=MUDO).pack(anchor="w", pady=(2, 0))
-            ttk.Button(topo, text="Abrir no Lattes", command=lambda: webbrowser.open("http://lattes.cnpq.br/" + lid)).pack(side="right", anchor="n")
-            nums = tk.Frame(j, bg=CARTAO, padx=22)
-            nums.pack(fill="x")
-            for i, (rot, v) in enumerate(fx["numeros"]):
-                c = tk.Frame(nums, bg=CARTAO, highlightthickness=1, highlightbackground=BORDA, padx=10, pady=6)
-                c.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 8, 0))
-                nums.columnconfigure(i, weight=1, uniform="f")
-                tk.Label(c, text=n.num(v), font=(FONTE, 16, "bold"), bg=CARTAO, fg=TINTA).pack(anchor="w")
-                tk.Label(c, text=rot, font=(FONTE, 9), bg=CARTAO, fg=MUDO).pack(anchor="w")
-            baixo = tk.Frame(j, bg=CARTAO, padx=22, pady=14)
-            baixo.pack(fill="both", expand=True)
-            baixo.columnconfigure(0, weight=3)
-            baixo.columnconfigure(1, weight=2)
-            baixo.rowconfigure(1, weight=1)
-            tk.Label(baixo, text="Produção bibliográfica por ano", font=(FONTE, 10, "bold"), bg=CARTAO).grid(row=0, column=0, sticky="w")
-            gfx = Grafico(baixo)
-            gfx.grid(row=1, column=0, sticky="nsew", pady=(4, 0))
-            gfx.mostrar(fx["grafico"])
-            tk.Label(baixo, text="Parcerias no grupo", font=(FONTE, 10, "bold"), bg=CARTAO).grid(row=0, column=1, sticky="w", padx=(20, 0))
-            t = Tabela(baixo, altura=8)
-            t.grid(row=1, column=1, sticky="nsew", padx=(20, 0), pady=(4, 0))
-            t.mostrar(["Membro", "Trabalhos juntos"], [list(x) for x in fx["parceiros"]], [200, 110])
+            j.resizable(False, False)
+            tk.Label(j, text="Adicionar membros", font=(FONTE, 13, "bold"), bg=CARTAO, fg=MARINHO).pack(anchor="w")
+            tk.Label(j, text="Cole os IDs Lattes (16 dígitos) ou os links, um por linha. Para quem não tem Lattes\n"
+                     "(pesquisador estrangeiro, por exemplo), use o ORCID: os dados vêm do OpenAlex.",
+                     font=(FONTE, 9), bg=CARTAO, fg=MUDO, justify="left").pack(anchor="w", pady=(2, 8))
+            tx = tk.Text(j, height=8, width=56, relief="flat", font=(FONTE, 10), bg="#F7F9FB", highlightthickness=1,
+                         highlightbackground=BORDA, highlightcolor=ACENTO, padx=8, pady=6)
+            tx.pack(fill="x")
+            tx.focus_set()
+            l = tk.Frame(j, bg=CARTAO)
+            l.pack(fill="x", pady=(10, 0))
+            tk.Label(l, text="Categoria", bg=CARTAO).pack(side="left")
+            cb = ttk.Combobox(l, values=n.CATEGORIAS, width=22)
+            cb.set(n.CATEGORIAS[0])
+            cb.pack(side="left", padx=8)
+            v_baixar = tk.BooleanVar(value=True)
+            ttk.Checkbutton(j, text="Baixar os currículos agora", variable=v_baixar).pack(anchor="w", pady=(10, 0))
+
+            def ok():
+                novos = self._adicionar_texto(tx.get("1.0", "end"), cb.get().strip())
+                if novos is None:
+                    return
+                j.destroy()
+                if novos and v_baixar.get():
+                    self._rodar(["faltam", "gerar"])
+                    self.nb.select(self.abas["membros"])
+            b = tk.Frame(j, bg=CARTAO)
+            b.pack(fill="x", pady=(14, 0))
+            ttk.Button(b, text="Adicionar", style="Acento.TButton", command=ok).pack(side="right")
+            ttk.Button(b, text="Cancelar", command=j.destroy).pack(side="right", padx=8)
             j.bind("<Escape>", lambda e: j.destroy())
+            j.grab_set()
 
         def _trocar_foto(self):
             ids = self._ids_selecionados()
@@ -658,6 +901,7 @@ def interface():
             self.cb_graf_resumo.pack(side="left")
             self.cb_graf_resumo.bind("<<ComboboxSelected>>", lambda e: self._grafico_resumo())
             self.g_resumo = Grafico(baixo, height=self.px(240))
+            self.g_resumo.ao_clicar = lambda ref, dica: self._clique_grafico(ref, dica)
             self.g_resumo.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
             ttk.Label(baixo, text="Indicadores", style="Secao.TLabel").grid(row=0, column=1, sticky="w", padx=(24, 0))
             self.t_ind = Tabela(baixo, altura=8)
@@ -666,16 +910,16 @@ def interface():
         # ---------------------------------------------------- aba Graficos
         def _montar_graficos(self):
             f = self.abas["graficos"]
-            esq = ttk.Frame(f, style="Cartao.TFrame", width=self.px(300))
+            esq = ttk.Frame(f, style="Cartao.TFrame", width=self.px(330))
             esq.pack(side="left", fill="y")
             esq.pack_propagate(False)
             ttk.Label(esq, text="Gráficos", style="Secao.TLabel").pack(anchor="w")
-            ttk.Label(esq, text="Passe o mouse sobre as barras para ver os números.", style="MudoCartao.TLabel",
-                      wraplength=self.px(280), justify="left").pack(anchor="w", pady=(2, 8))
-            self.lst_graf = tk.Listbox(esq, activestyle="none", relief="flat", highlightthickness=0, font=(FONTE, 10),
-                                       selectbackground="#D5E4F6", selectforeground=TINTA, bg=CARTAO, fg=TINTA, exportselection=False)
-            self.lst_graf.pack(fill="both", expand=True)
-            self.lst_graf.bind("<<ListboxSelect>>", lambda e: self._mostrar_grafico())
+            ttk.Label(esq, text="Passe o mouse para ver os números; clique numa barra para ver os itens.", style="MudoCartao.TLabel",
+                      wraplength=self.px(310), justify="left").pack(anchor="w", pady=(2, 8))
+            self.tv_graf = ttk.Treeview(esq, show="tree", selectmode="browse")
+            self.tv_graf.pack(fill="both", expand=True)
+            self.tv_graf.tag_configure("secao", font=(FONTE, 10, "bold"), foreground=MARINHO)
+            self.tv_graf.bind("<<TreeviewSelect>>", lambda e: self._mostrar_grafico())
             dir_ = ttk.Frame(f, style="Cartao.TFrame", padding=(20, 0, 0, 0))
             dir_.pack(side="left", fill="both", expand=True)
             cab = ttk.Frame(dir_, style="Cartao.TFrame")
@@ -689,7 +933,9 @@ def interface():
             self.lb_graf_sub.pack(anchor="w", pady=(2, 8))
             self.g_principal = Grafico(dir_)
             self.g_principal.pack(fill="both", expand=True)
+            self.g_principal.ao_clicar = lambda ref, dica: self._clique_grafico(ref, dica)
             self.catalogo = []
+            self._graf_sel = None
 
         # ----------------------------------------------------- aba Tabelas
         def _montar_tabelas(self):
@@ -795,6 +1041,19 @@ def interface():
                     lk.pack(side="left", padx=8)
                     lk.bind("<Button-1>", lambda e, u=url: webbrowser.open(u))
             tk.Label(meio, text=marca.INSTITUICAO, font=(FONTE, 10), fg=MUDO, bg=CARTAO).pack(pady=(10, 0))
+            gemec = tk.Frame(meio, bg=CARTAO, cursor="hand2")
+            gemec.pack(pady=(16, 0))
+            arq = os.path.join(marca.PASTA, "gemec-120.png")
+            if os.path.exists(arq):
+                self._img_gemec = tk.PhotoImage(file=arq)
+                k = max(1, round(120 / max(48, self.px(56))))
+                self._img_gemec = self._img_gemec.subsample(k, k) if k > 1 else self._img_gemec
+                tk.Label(gemec, image=self._img_gemec, bg=CARTAO).pack(side="left", padx=(0, 14))
+            tg = tk.Label(gemec, text="Um trabalho do GEMEC – Grupo de Estudos em Mecânica\nExperimental e Computacional da UNIFEI",
+                          font=(FONTE, 10), fg=TINTA, bg=CARTAO, justify="left")
+            tg.pack(side="left")
+            for w in [gemec] + gemec.winfo_children():
+                w.bind("<Button-1>", lambda e: webbrowser.open(marca.GEMEC))
             texto = ("Cadastre os membros do grupo pelo ID Lattes: o Altímetro baixa os currículos, processa tudo com o "
                      "scriptLattes e mostra a produção, as orientações, os projetos e a colaboração do grupo em qualquer período, "
                      "com gráficos, indicadores, relatórios e exportação para Excel.")
@@ -893,11 +1152,11 @@ def interface():
             self._recalcular()
 
         # ------------------------------------------------------ membros
-        CAB_M = ["", "Nome", "Categoria", "ID Lattes", "Currículo", "Atualizado no Lattes"]
+        CAB_M = ["", "Nome", "Categoria", "ID (Lattes ou ORCID)", "Currículo", "Atualizado em", "Fonte"]
 
         def _mostrar_membros(self):
             g = self.grupo
-            larg = [40, 330, 170, 150, 170, 150]
+            larg = [40, 320, 160, 170, 160, 120, 130]
             if not g:
                 self.t_m.mostrar(self.CAB_M, [], larg)
                 self.lb_membros.configure(text="Crie um grupo para começar (botão “Novo grupo”, no alto).")
@@ -908,7 +1167,8 @@ def interface():
             for m in sorted(g.membros, key=lambda m: (ordem.get(m.get("categoria"), 99), m.get("categoria") or "", n.norm(m.get("nome") or m["id"]))):
                 d = g.cv_data(m["id"])
                 linhas.append(["✓" if m.get("incluir", True) else "–", m.get("nome") or "(o nome vem com o currículo)", m.get("categoria") or "",
-                               m["id"], f"baixado em {d:%d/%m/%Y}" if d else "não baixado", pessoas.get(m["id"], {}).get("atualizado", "")])
+                               m["id"], f"baixado em {d:%d/%m/%Y}" if d else "não baixado", pessoas.get(m["id"], {}).get("atualizado", ""),
+                               "ORCID (OpenAlex)" if n.e_orcid(m["id"]) else "Lattes"])
             self.t_m.mostrar(self.CAB_M, linhas, larg)
             sem = sum(1 for m in g.membros if not g.cv_data(m["id"]))
             self.lb_membros.configure(text=f"{g.nome} · {n.qt(len(g.membros), 'membro', 'membros')}" + (f" · {sem} sem currículo baixado" if sem else ""))
@@ -964,35 +1224,40 @@ def interface():
             janela.grab_set()
 
         def _adicionar(self):
+            if self._adicionar_texto(self.tx_ids.get("1.0", "end"), self.cb_cat_novo.get().strip()) is not None:
+                self.tx_ids.delete("1.0", "end")
+
+        def _adicionar_texto(self, texto, cat):
+            """IDs Lattes (16 digitos) ou ORCID, um por linha, com o nome depois se quiser.
+            Devolve quantos entraram (None: nada reconhecido)."""
             if not self.grupo:
                 self._novo_grupo()
                 if not self.grupo:
-                    return
+                    return None
             self._reler_grupo()
             novos, repetidos = 0, 0
-            cat = self.cb_cat_novo.get().strip()
-            for linha in self.tx_ids.get("1.0", "end").splitlines():
-                m = re.search(r"(\d{16})", linha)
+            for linha in texto.splitlines():
+                m = re.search(r"(?<!\d)(\d{16})(?!\d)", linha) or re.search(n.ORCID_RE, linha)
                 if not m:
                     continue
-                lid = m.group(1)
+                lid = m.group(1) if m.lastindex else m.group(0).upper()
                 if self.grupo.membro(lid):
                     repetidos += 1
                     continue
-                resto = re.sub(r"\S*lattes\.cnpq\.br/\d{16}\S*", "", linha).replace(lid, "")
+                resto = re.sub(r"\S*(lattes\.cnpq\.br|orcid\.org)/\S*", "", linha).replace(m.group(0), "")
                 nome = re.sub(r"^[\s,;:\-–\t|]+|[\s,;:\-–\t|]+$", "", resto).strip()
                 self.grupo.membros.append({"id": lid, "nome": nome, "categoria": cat, "incluir": True})
                 novos += 1
             if not novos and not repetidos:
-                messagebox.showinfo("Adicionar membros", "Nenhum ID Lattes de 16 dígitos encontrado no texto.", parent=self)
-                return
+                messagebox.showinfo("Adicionar membros", "Nenhum ID Lattes (16 dígitos) nem ORCID (0000-0000-0000-0000) encontrado no texto.", parent=self)
+                return None
             self.grupo.salvar()
-            self.tx_ids.delete("1.0", "end")
             self._carregar_base()
             msg = f"{n.qt(novos, 'membro adicionado', 'membros adicionados')}."
             if repetidos:
                 msg += f" {n.qt(repetidos, 'já estava', 'já estavam')} no grupo."
             self.lb_prog.configure(text=msg + " Clique em “Baixar só os novos” para buscar os currículos.")
+            return novos
 
         def _mudar_categoria(self):
             ids, cat = self._ids_selecionados(), self.cb_cat_sel.get().strip()
@@ -1016,9 +1281,13 @@ def interface():
             self.lb_prog.configure(text="Removido. Clique em “Só recalcular” para tirar das estatísticas.")
             self._carregar_base()
 
+        def _salvar_chave(self):
+            self.pref["openalex_chave"] = self.v_chave.get().strip()
+            n.gravar_json(n.PREFERENCIAS, self.pref)
+
         def _abrir_lattes(self):
             for lid in self._ids_selecionados()[:10]:
-                webbrowser.open("http://lattes.cnpq.br/" + lid)
+                webbrowser.open(n.link_perfil(lid))
 
         # ------------------------------------------- download / scriptLattes
         def _botoes_tarefa(self, livre):
@@ -1111,7 +1380,7 @@ def interface():
             self.tx_log.see("end")
 
         def _abrir_scriptlattes(self):
-            if self.grupo and self.grupo.tem_relatorio():
+            if self.grupo and self.grupo.tem_scriptlattes():
                 webbrowser.open(pathlib.Path(self.grupo.saida, "index.html").as_uri())
 
         # ----------------------------------------------------- periodo
@@ -1195,7 +1464,7 @@ def interface():
                 tab.mostrar([""], [])
             self.tx.delete("1.0", "end")
             self.catalogo = []
-            self.lst_graf.delete(0, "end")
+            self.tv_graf.delete(*self.tv_graf.get_children())
             self.cb_graf_resumo["values"] = []
             self.g_resumo.mostrar(None)
             self.g_principal.mostrar(None)
@@ -1245,12 +1514,17 @@ def interface():
                 s.configure(text=sub)
 
             self.catalogo = n.graficos(est, base, g)
-            titulos = [t for _k, t, _s in self.catalogo]
-            sel_lista = self.lst_graf.curselection()
-            self.lst_graf.delete(0, "end")
-            for t in titulos:
-                self.lst_graf.insert("end", "  " + t)
-            self.lst_graf.selection_set(sel_lista[0] if sel_lista else 0)
+            titulos = [t for _s, _k, t, _sp in self.catalogo]
+            antes = self._graf_sel
+            self.tv_graf.delete(*self.tv_graf.get_children())
+            secoes = {}
+            for secao, chave, titulo, _sp in self.catalogo:
+                if secao not in secoes:
+                    secoes[secao] = self.tv_graf.insert("", "end", text=secao, open=True, tags=("secao",))
+                self.tv_graf.insert(secoes[secao], "end", iid="g:" + chave, text=titulo)
+            alvo = antes if antes and self.tv_graf.exists(antes) else "g:" + self.catalogo[0][1]
+            self.tv_graf.selection_set(alvo)
+            self.tv_graf.see(alvo)
             self._mostrar_grafico()
             atual = self.cb_graf_resumo.get()
             self.cb_graf_resumo["values"] = titulos
@@ -1287,27 +1561,56 @@ def interface():
 
         # ----------------------------------------------------- graficos
         def _grafico_atual(self):
-            sel = self.lst_graf.curselection()
-            return self.catalogo[sel[0]] if sel and self.catalogo else None
+            sel = self.tv_graf.selection()
+            if not sel or not sel[0].startswith("g:"):
+                return None
+            chave = sel[0][2:]
+            for secao, k, titulo, spec in self.catalogo:
+                if k == chave:
+                    return k, titulo, spec
+            return None
 
         def _mostrar_grafico(self):
+            sel = self.tv_graf.selection()
+            if sel and not sel[0].startswith("g:"):  # clicou numa secao: vai para o primeiro grafico dela
+                filhos = self.tv_graf.get_children(sel[0])
+                if filhos:
+                    self.tv_graf.selection_set(filhos[0])
+                return
             g = self._grafico_atual()
             if not g:
                 return
+            self._graf_sel = "g:" + g[0]
             chave, titulo, spec = g
             per = f"{self.est.a}" if self.est.a == self.est.b else f"{self.est.a}–{self.est.b}"
             self.lb_graf.configure(text=titulo)
-            sub = {"rede": "Cada círculo é um membro (tamanho: produção no período); cada linha, trabalhos em comum. Os nomes aparecem nos mais conectados.",
+            sub = {"rede": "Cada círculo é um membro (tamanho: produção no período); cada linha, trabalhos em comum. Clique num membro para ver a ficha.",
                    "membros": "Cada membro conta os artigos do seu currículo; um artigo em parceria conta para todos os autores do grupo."}.get(chave, "")
             self.lb_graf_sub.configure(text=f"{self.grupo.nome} · {per}" + (f" · {sub}" if sub else ""))
             self.g_principal.mostrar(spec)
 
         def _grafico_resumo(self):
             t = self.cb_graf_resumo.get()
-            for _k, titulo, spec in self.catalogo:
+            for _s, _k, titulo, spec in self.catalogo:
                 if titulo == t:
                     self.g_resumo.mostrar(spec)
                     return
+
+        def _clique_grafico(self, ref, dica=""):
+            """Abre o que a barra clicada representa: a lista de itens, a ficha do membro ou as pessoas de uma categoria."""
+            if not self.est:
+                return
+            if "membro_ficha" in ref:
+                self._ficha(ref["membro_ficha"])
+                return
+            if "composicao" in ref:
+                cat = ref["composicao"]
+                pessoas = sorted((self.base.pessoas.get(i, {}).get("nome", i), i) for i in self.est.sel
+                                 if ((self.grupo.membro(i) or {}).get("categoria") or "Sem categoria") == cat)
+                ListaPessoas(self, f"{cat} · {len(pessoas)}", pessoas)
+                return
+            itens = n.itens_filtro(self.est, ref)
+            ListaItens(self, dica.split(":")[0] if dica else "Itens", itens)
 
         def _salvar_grafico(self, formato):
             g = self._grafico_atual()
@@ -1342,7 +1645,7 @@ def interface():
             elif spec["tipo"] == "barras":
                 linhas = [["Item", "Valor"]] + [[r, v] for r, v in zip(spec["rotulos"], spec["valores"])]
             else:
-                nomes = {i: nome for i, nome, _p, _g in spec["nos"]}
+                nomes = {no[0]: no[1] for no in spec["nos"]}
                 linhas = [["Membro", "Membro", "Trabalhos em comum"]] + sorted([[nomes.get(a, a), nomes.get(b, b), p] for a, b, p in spec["arestas"]], key=lambda r: -r[2])
             self.clipboard_clear()
             self.clipboard_append("\n".join("\t".join(str(x) for x in r) for r in linhas))

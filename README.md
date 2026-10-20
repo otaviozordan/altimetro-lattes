@@ -15,7 +15,7 @@ Você só informa o **ID Lattes** de cada membro. O programa baixa os currículo
 
 ## O que ele faz
 
-- **Equipe:** quem está no grupo, com a foto do Lattes e os números de cada pessoa no período, e o botão para adicionar membros.
+- **Equipe:** quem está no grupo, com a foto do Lattes, os números de cada pessoa no período e a **fonte dos dados** (Lattes, OpenAlex ou os dois). Membros podem ser adicionados, editados, buscados e removidos a qualquer momento.
 - **Página de cada membro:** visão geral (números clicáveis, produção por ano, parcerias no grupo), perfil (resumo, formação, linhas de pesquisa, áreas, idiomas) e as listas de publicações, eventos, orientações, projetos e outros. Exporta para Excel e gera um relatório individual.
 - **Resumo:** artigos, trabalhos em eventos, livros e capítulos, orientações, projetos, produção técnica, prêmios, bancas e eventos, com a comparação com o período anterior de mesma duração ("▲ 30% vs 2017–2021").
 - **Indicadores:** artigos por docente por ano, orientações por docente, colaboração interna (artigos com dois ou mais membros), artigos com DOI, membros com produção, periódicos distintos e projetos coordenados pelo grupo.
@@ -29,9 +29,10 @@ Você só informa o **ID Lattes** de cada membro. O programa baixa os currículo
   - **Colaboração:** rede entre os membros, parcerias mais frequentes, membros mais conectados.
 
   Todos podem ser salvos em PNG ou SVG.
+- **Detalhes de qualquer item:** duplo clique em qualquer linha abre os detalhes, com DOI, busca no Google Acadêmico e a referência pronta para copiar.
 - **Tabelas:** por ano, por membro, orientações, projetos, periódicos e eventos. Um clique no cabeçalho ordena, e o botão direito copia (cola direto no Excel ou no Word).
 - **Relatório:** um arquivo HTML com equipe, números, indicadores, gráficos, tabelas e um texto descritivo pronto. Abre no navegador e pode ser impresso ou salvo em PDF.
-- **Excel:** todas as tabelas numa planilha.
+- **Excel e JSON:** todas as tabelas numa planilha, ou tudo (membros, números, indicadores e itens, cada um com a fonte) em JSON para outros programas.
 - **Períodos prontos:** último ano, últimos 3, 5 ou 10 anos e os quadriênios da CAPES. Também dá para filtrar por categoria de membro (docentes, doutorandos, egressos...).
 
 Um trabalho que aparece no currículo de mais de um membro conta **uma vez** para o grupo (pelo DOI ou pelo título e ano) e uma vez para cada pessoa.
@@ -76,6 +77,15 @@ Também dá para rodar à mão: `python3 iniciar.py`. Para reinstalar as bibliot
 5. **Salvar relatório** gera o HTML; **Exportar Excel** gera a planilha.
 
 Para atualizar depois, use **Atualizar tudo** (baixa todos de novo) ou **Baixar só os novos**.
+
+### Homônimos e perfis duplicados no OpenAlex
+
+O OpenAlex tem homônimos (outras pessoas com o mesmo nome) e às vezes divide a mesma pessoa em vários perfis. Por isso:
+
+- **Vincular ORCID / OpenAlex** busca o nome e mostra cada perfil com instituição, anos, número de obras, ORCID e temas; você marca todos os que são da pessoa. Também serve para completar o Lattes de alguém com o que está no OpenAlex.
+- **Unir (mesma pessoa)** junta dois cadastros da mesma pessoa (por exemplo, o do Lattes e o do ORCID).
+- Na página do membro, **Ocultar selecionados** tira trabalhos que não são dele (dá para restaurar em **Editar**).
+- Trabalhos iguais no Lattes e no OpenAlex se juntam pelo DOI ou pelo título e ano, e a coluna **Fonte** mostra de onde veio cada um.
 
 ### Chave do OpenAlex (opcional)
 

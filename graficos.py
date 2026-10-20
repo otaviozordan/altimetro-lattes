@@ -49,6 +49,8 @@ def primitivas(spec, w, h, k=1.0):
         return _colunas(spec, w, h, k)
     if t == "barras":
         return _barras(spec, w, h, k)
+    if t == "barras_emp":
+        return _barras_emp(spec, w, h, k)
     if t == "rede":
         return _rede(spec, w, h, k)
     return []
@@ -138,6 +140,42 @@ def _barras(spec, w, h, k):
     return out
 
 
+def _barras_emp(spec, w, h, k):
+    """Barras horizontais empilhadas (ex.: publicacoes por membro, por tipo), com legenda."""
+    rot, series = spec["rotulos"], spec["series"]
+    cores = marca.SERIES
+    out, y = _legenda([s[0] for s in series], cores, 16 * k, 14 * k, k, w)
+    topo = y + 18 * k
+    n = max(len(rot), 1)
+    tam = 11 * k
+    maxc = 40
+    totais = [sum(s[1][i] for s in series) for i in range(len(rot))]
+    esq = min(w * 0.4, max(_largura_texto(_cortar(r, maxc), tam) for r in rot) + 20 * k) if rot else 40 * k
+    dir_ = max(46 * k, _largura_texto(_num(max(totais + [0])), 10 * k) + 18 * k)
+    base = h - 8 * k
+    linha = (base - topo) / n
+    barra = max(4 * k, min(22 * k, linha * 0.66))
+    maior = max(totais + [1])
+    refs = spec.get("refs") or [{}] * len(rot)
+    filtros = spec.get("filtros") or [{}] * len(series)
+    out.append(("line", esq, topo, esq, base, EIXO, 1))
+    for i, r in enumerate(rot):
+        yc = topo + i * linha + linha / 2
+        out.append(("text", esq - 10 * k, yc, _cortar(r, maxc), "e", tam, TXT, False, str(r)))
+        x = esq
+        segs = [(j, s[0], s[1][i]) for j, s in enumerate(series) if s[1][i]]
+        for q, (j, nome, v) in enumerate(segs):
+            x1 = x + (w - esq - dir_) * v / maior
+            ultimo = q == len(segs) - 1
+            ref = dict(refs[i] or {})
+            ref.update(filtros[j] if j < len(filtros) else {})
+            out.append(("hbar", x, yc - barra / 2, x1 - (0 if ultimo else 2 * k), yc + barra / 2, cores[j % len(cores)], 4 * k if ultimo else 0,
+                        f"{r} · {nome}: {_num(v)}", ref or None))
+            x = x1
+        out.append(("text", x + 8 * k, yc, _num(totais[i]), "w", 10 * k, TXT, True))
+    return out
+
+
 def _rede(spec, w, h, k):
     nos, arestas, pos = spec["nos"], spec["arestas"], spec["pos"]
     grupos = spec.get("grupos", [])
@@ -147,6 +185,7 @@ def _rede(spec, w, h, k):
     m = 34 * k
     topo = (y + 26 * k) if grupos else m
     P = {i: (m + x * (w - 2 * m), topo + yy * (h - topo - m)) for i, (x, yy) in pos.items()}
+    spec["_tela"] = (m, topo, w, h)  # para arrastar os nos (posicao da tela -> 0..1)
     maior_a = max([a[2] for a in arestas] + [1])
     for a, b, p in sorted(arestas, key=lambda x: x[2]):
         if a in P and b in P:
@@ -257,6 +296,8 @@ def _caminho(x0, y0, x1, y1, r, t):
 def altura_sugerida(spec):
     if spec["tipo"] == "barras":
         return max(160, 34 * len(spec["rotulos"]) + 20)
+    if spec["tipo"] == "barras_emp":
+        return max(200, 34 * len(spec["rotulos"]) + 60)
     if spec["tipo"] == "rede":
         return 520
     return 340 if len(spec.get("series", [])) > 1 else 300

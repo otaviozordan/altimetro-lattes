@@ -165,8 +165,49 @@ def e_orcid(lid):
     return bool(re.fullmatch(ORCID_RE, str(lid or "")))
 
 
+def e_lattes(lid):
+    return bool(re.fullmatch(r"\d{16}", str(lid or "")))
+
+
+def e_openalex(lid):
+    """Membro cadastrado direto por um perfil do OpenAlex (sem Lattes nem ORCID)."""
+    return str(lid or "").startswith("openalex:")
+
+
 def link_perfil(lid):
-    return f"https://orcid.org/{lid}" if e_orcid(lid) else f"http://lattes.cnpq.br/{lid}"
+    if e_orcid(lid):
+        return f"https://orcid.org/{lid}"
+    if e_openalex(lid):
+        return "https://openalex.org/" + lid.split(":", 1)[1]
+    return f"http://lattes.cnpq.br/{lid}"
+
+
+def fontes_openalex(m):
+    """(orcid, [ids de autor do OpenAlex]) ligados ao membro. Varios ids: o
+    OpenAlex as vezes divide a mesma pessoa em mais de um perfil."""
+    orcid = m.get("orcid") or (m["id"] if e_orcid(m["id"]) else "")
+    ids = list(m.get("openalex") or [])
+    if e_openalex(m["id"]) and m["id"].split(":", 1)[1] not in ids:
+        ids.insert(0, m["id"].split(":", 1)[1])
+    return orcid, ids
+
+
+def usa_openalex(m):
+    orcid, ids = fontes_openalex(m)
+    return bool(orcid or ids)
+
+
+def fonte_membro(m):
+    if e_lattes(m["id"]):
+        return "Lattes + OpenAlex" if usa_openalex(m) else "Lattes"
+    return "ORCID · OpenAlex" if fontes_openalex(m)[0] else "OpenAlex"
+
+
+def texto_fontes(fs):
+    fs = set(fs or ())
+    if {"Lattes", "OpenAlex"} <= fs:
+        return "Lattes + OpenAlex"
+    return next(iter(fs)) if fs else ""
 
 
 OPENALEX = "https://api.openalex.org"
@@ -181,28 +222,60 @@ def _openalex(caminho, chave=None):
         return json.loads(r.read().decode("utf-8"))
 
 
-def baixar_openalex(g, orcid, chave=None):
-    """Autor e obras do OpenAlex pelo ORCID, gravados em openalex/<orcid>.json."""
-    autor = _openalex(f"/authors/orcid:{orcid}", chave)
+def buscar_autores(nome, chave=None):
+    """Perfis do OpenAlex com esse nome, para escolher o certo (homonimos)."""
+    campos = "id,display_name,orcid,works_count,last_known_institutions,topics,counts_by_year"
+    d = _openalex(f"/authors?search={urllib.parse.quote(nome)}&per-page=25&select={campos}", chave)
+    out = []
+    for a in d.get("results") or []:
+        anos = [c["year"] for c in a.get("counts_by_year") or [] if c.get("works_count")]
+        out.append({"id": a["id"].rsplit("/", 1)[-1], "nome": a.get("display_name", ""),
+                    "orcid": (re.search(ORCID_RE, a.get("orcid") or "") or [""])[0],
+                    "obras": a.get("works_count", 0),
+                    "instituicao": ", ".join(i.get("display_name", "") for i in a.get("last_known_institutions") or []),
+                    "temas": ", ".join(t.get("display_name", "") for t in (a.get("topics") or [])[:3]),
+                    "anos": f"{min(anos)}–{max(anos)}" if anos else ""})
+    return out
+
+
+def _obras(filtro, chave):
     obras = []
-    campos = "title,publication_year,type,doi,primary_location,authorships"
+    campos = "id,title,publication_year,type,doi,primary_location,authorships"
     # Paginacao simples (page=): o cursor do OpenAlex exige chave a partir da 2a pagina.
     for pagina in range(1, 51):  # ate 10 mil obras
-        d = _openalex(f"/works?filter=author.orcid:{orcid}&per-page=200&page={pagina}&select={campos}", chave)
+        d = _openalex(f"/works?filter={filtro}&per-page=200&page={pagina}&select={campos}", chave)
         res = d.get("results") or []
         for w in res:
             fonte = (w.get("primary_location") or {}).get("source") or {}
-            obras.append({"titulo": w.get("title") or "", "ano": w.get("publication_year"), "tipo": w.get("type") or "",
-                          "fonte_tipo": fonte.get("type") or "", "veiculo": fonte.get("display_name") or "", "doi": doi_de(w.get("doi")),
+            obras.append({"id": (w.get("id") or "").rsplit("/", 1)[-1], "titulo": w.get("title") or "", "ano": w.get("publication_year"),
+                          "tipo": w.get("type") or "", "fonte_tipo": fonte.get("type") or "", "veiculo": fonte.get("display_name") or "",
+                          "doi": doi_de(w.get("doi")),
                           "autores": "; ".join((a.get("author") or {}).get("display_name", "") for a in w.get("authorships") or [])})
         if len(res) < 200:
             break
-    dados = {"orcid": orcid, "nome": autor.get("display_name") or orcid, "openalex": autor.get("id", ""),
+    return obras
+
+
+def baixar_openalex(g, m, chave=None):
+    """Perfil e obras do OpenAlex de um membro (pelo ORCID e/ou pelos perfis
+    vinculados), gravados em openalex/<id>.json. Obras repetidas entre os
+    perfis entram uma vez."""
+    orcid, ids = fontes_openalex(m)
+    autor = _openalex(f"/authors/orcid:{orcid}" if orcid else f"/authors/{ids[0]}", chave)
+    obras, vistas = [], set()
+    filtros = ([f"author.orcid:{orcid}"] if orcid else []) + (["authorships.author.id:" + "|".join(ids)] if ids else [])
+    for f in filtros:
+        for w in _obras(f, chave):
+            if w["id"] not in vistas:
+                vistas.add(w["id"])
+                obras.append(w)
+    dados = {"membro": m["id"], "orcid": orcid, "openalex_ids": ids, "nome": autor.get("display_name") or orcid or m["id"],
+             "openalex": autor.get("id", ""),
              "instituicao": ", ".join(i.get("display_name", "") for i in autor.get("last_known_institutions") or []),
              "temas": [t.get("display_name", "") for t in (autor.get("topics") or [])[:10]],
              "baixado": datetime.date.today().isoformat(), "obras": obras}
-    os.makedirs(os.path.dirname(g.cv(orcid)), exist_ok=True)
-    gravar_json(g.cv(orcid), dados)
+    os.makedirs(os.path.dirname(g.oa_arquivo(m["id"])), exist_ok=True)
+    gravar_json(g.oa_arquivo(m["id"]), dados)
     return dados
 
 
@@ -226,8 +299,10 @@ def itens_do_openalex(d):
             cat = "artigos"
         else:
             cat = "outras_bib"
-        out.append(Item(cat, ano_int(w.get("ano")), w.get("titulo"), w.get("autores"), w.get("veiculo"), w.get("doi") or "",
-                        extra="Dataset" if cat == "tecnica" else ""))
+        it = Item(cat, ano_int(w.get("ano")), w.get("titulo"), w.get("autores"), w.get("veiculo"), w.get("doi") or "",
+                  extra="Dataset" if cat == "tecnica" else "")
+        it.fontes = {"OpenAlex"}
+        out.append(it)
     return out
 
 
@@ -278,9 +353,17 @@ class Grupo:
         return None
 
     def cv(self, lid):
-        if e_orcid(lid):
-            return os.path.join(self.pasta, "openalex", lid + ".json")
+        """O curriculo do Lattes ou, para quem nao tem Lattes, o arquivo do OpenAlex."""
+        if not e_lattes(lid):
+            return self.oa_arquivo(lid)
         return os.path.join(self.cache, lid)
+
+    def oa_arquivo(self, lid):
+        return os.path.join(self.pasta, "openalex", lid.replace(":", "_") + ".json")
+
+    def oa_data(self, lid):
+        c = self.oa_arquivo(lid)
+        return datetime.date.fromtimestamp(os.path.getmtime(c)) if os.path.exists(c) else None
 
     def cv_data(self, lid):
         c = self.cv(lid)
@@ -311,6 +394,31 @@ class Grupo:
 
 # ------------------------------------- download e scriptLattes (outro processo)
 
+def unir_membros(g, ids):
+    """Junta varios cadastros da mesma pessoa (ex.: o Lattes e o ORCID). Fica o
+    cadastro do Lattes, se houver; ORCID, perfis do OpenAlex e ocultos se somam."""
+    ms = [g.membro(i) for i in ids if g.membro(i)]
+    if len(ms) < 2:
+        return None
+    ms.sort(key=lambda m: (not e_lattes(m["id"]), not e_orcid(m["id"])))
+    fica = ms[0]
+    for m in ms[1:]:
+        orcid, oa = fontes_openalex(m)
+        if orcid and not fica.get("orcid") and not e_orcid(fica["id"]):
+            fica["orcid"] = orcid
+        fica["openalex"] = list(dict.fromkeys((fica.get("openalex") or []) + oa))
+        fica["ocultos"] = list(dict.fromkeys((fica.get("ocultos") or []) + (m.get("ocultos") or [])))
+        if not g.foto(fica["id"]) and g.foto(m["id"]):
+            shutil.copy(g.foto(m["id"]), g.foto_arquivo(fica["id"]))
+        g.membros.remove(m)
+    if not fica.get("openalex"):
+        fica.pop("openalex", None)
+    if os.path.exists(g.oa_arquivo(fica["id"])):
+        os.remove(g.oa_arquivo(fica["id"]))  # baixa de novo com os perfis somados
+    g.salvar()
+    return fica
+
+
 def avisar(*partes):
     print("@@", *partes, flush=True)
 
@@ -323,12 +431,11 @@ def cmd_baixar(pasta, so_faltam):
     """Baixa os CVs com o baixaLattes do scriptLattes (Chrome headless)."""
     g = Grupo(pasta)
     os.makedirs(g.cache, exist_ok=True)
-    todos = [m for m in g.membros if not (so_faltam and os.path.exists(g.cv(m["id"])))]
-    if not todos:
+    orcids = [m for m in g.membros if usa_openalex(m) and not (so_faltam and os.path.exists(g.oa_arquivo(m["id"])))]
+    lista = [m for m in g.membros if e_lattes(m["id"]) and not (so_faltam and os.path.exists(g.cv(m["id"])))]
+    if not orcids and not lista:
         avisar("fim", "ok", "Todos os currículos já estavam baixados.")
         return
-    orcids = [m for m in todos if e_orcid(m["id"])]
-    lista = [m for m in todos if not e_orcid(m["id"])]
     ok_o, falhas_o = 0, []
     chave = ler_json(PREFERENCIAS, {}).get("openalex_chave") or None
     for k, m in enumerate(orcids, 1):
@@ -336,14 +443,14 @@ def cmd_baixar(pasta, so_faltam):
         avisar("prog", k - 1, len(orcids), f"OpenAlex: {nome}")
         print(f"[ORCID {k}/{len(orcids)}] {nome}", flush=True)
         try:
-            d = baixar_openalex(g, m["id"], chave)
+            d = baixar_openalex(g, m, chave)
         except Exception as e:  # noqa: BLE001
             falhas_o.append(nome)
             print("  falhou:", "ORCID não encontrado no OpenAlex" if "404" in str(e) else str(e)[:200], flush=True)
             continue
         ok_o += 1
         print(f"  {len(d['obras'])} obras", flush=True)
-        if not m.get("nome") or m["nome"] == m["id"]:
+        if not e_lattes(m["id"]) and (not m.get("nome") or m["nome"] == m["id"]):
             g2 = Grupo(pasta)
             mm = g2.membro(m["id"])
             if mm is not None:
@@ -403,8 +510,8 @@ def cmd_baixar(pasta, so_faltam):
 def cmd_gerar(pasta):
     """Roda o scriptLattes com os CVs que estao no cache."""
     g = Grupo(pasta)
-    presentes = [m for m in g.membros if os.path.exists(g.cv(m["id"])) and not e_orcid(m["id"])]
-    do_openalex = [m for m in g.membros if e_orcid(m["id"]) and os.path.exists(g.cv(m["id"]))]
+    presentes = [m for m in g.membros if e_lattes(m["id"]) and os.path.exists(g.cv(m["id"]))]
+    do_openalex = [m for m in g.membros if usa_openalex(m) and os.path.exists(g.oa_arquivo(m["id"]))]
     if not presentes:
         if do_openalex:
             if os.path.isdir(g.saida):
@@ -508,7 +615,7 @@ PJ = ["pj_pesquisa", "pj_extensao", "pj_desenvolvimento", "pj_outros"]
 
 
 class Item:
-    __slots__ = ("cat", "ano", "fim", "titulo", "pessoas", "veiculo", "doi", "extra", "coord", "membros")
+    __slots__ = ("cat", "ano", "fim", "titulo", "pessoas", "veiculo", "doi", "extra", "coord", "membros", "fontes")
 
     def __init__(self, cat, ano, titulo, pessoas="", veiculo="", doi="", extra="", fim=None, coord=()):
         self.cat, self.ano, self.fim = cat, ano, fim
@@ -518,6 +625,11 @@ class Item:
         self.doi, self.extra = doi, extra
         self.coord = set(coord)
         self.membros = set()
+        self.fontes = {"Lattes"}
+
+    def marca_oculto(self):
+        """Como o item e lembrado quando alguem o oculta (homonimo, erro)."""
+        return ("doi:" + self.doi) if self.doi else f"t:{chave_texto(self.titulo, 120)}:{self.ano or ''}"
 
     def chave(self, dono):
         if self.cat in ("premios",):
@@ -627,49 +739,72 @@ def perfil_openalex(d):
 
 class Base:
     """Itens do grupo inteiro, sem repeticao: o mesmo trabalho no CV de dois
-    membros conta uma vez para o grupo (e uma vez para cada um deles)."""
+    membros (ou no Lattes e no OpenAlex) conta uma vez para o grupo e uma vez
+    para cada um deles. Cada item lembra de onde veio (it.fontes)."""
 
     def __init__(self, grupo):
         self.grupo = grupo
-        self.pessoas = {}   # id -> {"nome","atualizado"}
-        self.itens = []
-        unidos = {}
+        self.pessoas = {}   # id -> perfil (nome, atualizado, fontes, ...)
+        self._lista, self._indice = [], {}
+        membros = {m["id"]: m for m in grupo.membros}
         for arq in sorted(glob.glob(os.path.join(grupo.saida, "json", "*.json"))):
             d = ler_json(arq, None)
             if not d:
                 continue
-            info = d.get("informacoes_pessoais") or {}
-            lid = str(info.get("id_lattes") or "")
-            if not lid:
-                continue
+            lid = str((d.get("informacoes_pessoais") or {}).get("id_lattes") or "")
+            if lid not in membros:
+                continue  # sem ID ou removido do grupo depois da ultima atualizacao
             self.pessoas[lid] = perfil_lattes(d)
-            self._juntar(lid, itens_do_json(d), unidos)
+            self.pessoas[lid]["fontes"] = ["Lattes"]
+            self._juntar(lid, itens_do_json(d), set(membros[lid].get("ocultos") or []))
         for m in grupo.membros:
-            if e_orcid(m["id"]) and os.path.exists(grupo.cv(m["id"])):
-                d = ler_json(grupo.cv(m["id"]), None)
-                if d:
-                    self.pessoas[m["id"]] = perfil_openalex(d)
-                    self._juntar(m["id"], itens_do_openalex(d), unidos)
-        self.itens = list(unidos.values())
+            if not usa_openalex(m) or not os.path.exists(grupo.oa_arquivo(m["id"])):
+                continue
+            d = ler_json(grupo.oa_arquivo(m["id"]), None)
+            if not d:
+                continue
+            if m["id"] in self.pessoas:  # tem Lattes: o OpenAlex completa
+                self.pessoas[m["id"]]["fontes"].append("OpenAlex")
+                self.pessoas[m["id"]]["openalex"] = d.get("openalex", "")
+            else:
+                self.pessoas[m["id"]] = perfil_openalex(d)
+                self.pessoas[m["id"]]["fontes"] = ["OpenAlex"]
+            self._juntar(m["id"], itens_do_openalex(d), set(m.get("ocultos") or []))
+        self.itens = self._lista
         anos = [it.ano for it in self.itens if it.ano]
         self.ano_min = min(anos) if anos else datetime.date.today().year
         self.ano_max = max(max(anos) if anos else 0, datetime.date.today().year)
 
-    @staticmethod
-    def _juntar(lid, itens, unidos):
+    def _juntar(self, lid, itens, ocultos):
+        """Junta pelo DOI e, na producao, tambem pelo titulo (ano igual ou vizinho):
+        o Lattes as vezes nao tem o DOI que o OpenAlex tem."""
         for it in itens:
-            if not it.titulo:
+            if not it.titulo or it.marca_oculto() in ocultos:
                 continue
-            k = it.chave(lid)
-            if k in unidos:
-                velho = unidos[k]
+            chaves = [it.chave(lid)]
+            procura = list(chaves)
+            if it.cat in PRODUCAO:
+                tk = chave_texto(it.titulo, 150)
+                if len(tk) >= 20:  # titulos curtos demais ("Editorial") nao servem para juntar
+                    chaves.append(("t", tk, it.ano))
+                    procura += [("t", tk, it.ano), ("t", tk, (it.ano or 0) - 1), ("t", tk, (it.ano or 0) + 1)]
+            velho = next((self._indice[k] for k in procura if k in self._indice), None)
+            if velho is None:
+                it.membros.add(lid)
+                self._lista.append(it)
+                alvo = it
+            else:
+                alvo = velho
                 velho.membros.add(lid)
                 velho.coord |= it.coord
-                if not velho.ano and it.ano:
-                    velho.ano = it.ano
-            else:
-                it.membros.add(lid)
-                unidos[k] = it
+                velho.fontes |= it.fontes
+                velho.doi = velho.doi or it.doi
+                velho.veiculo = velho.veiculo or it.veiculo
+                velho.ano = velho.ano or it.ano
+                if it.doi:
+                    chaves.append(("doi", it.doi))
+            for k in chaves:
+                self._indice.setdefault(k, alvo)
 
 
 # ----------------------------------------------------------------- calculo
@@ -757,10 +892,48 @@ def itens_filtro(est, f):
     return out
 
 
+def item_dict(it, quem, base):
+    """Um item no JSON exportado."""
+    d = {"tipo": rotulo(it.cat), "categoria": it.cat, "grupo_tipo": CATS.get(it.cat, ("", ""))[1], "ano": it.ano, "titulo": it.titulo,
+         "pessoas": it.pessoas, "veiculo": it.veiculo, "doi": it.doi or None,
+         "membros": [{"id": p, "nome": base.pessoas.get(p, {}).get("nome", p)} for p in sorted(quem)],
+         "fontes": sorted(it.fontes)}
+    if it.extra:
+        d["detalhe"] = it.extra
+    if it.cat in PJ:
+        d["fim"] = it.fim
+        d["coordenacao"] = sorted(it.coord)
+    return d
+
+
+def exportar_json(est, base, grupo, itens=None, ficha_=None):
+    """Tudo do periodo num dicionario (para json.dump): grupo, membros, numeros,
+    indicadores, por ano e os itens, cada um com a fonte (Lattes/OpenAlex)."""
+    import marca as _m
+    itens = est.itens if itens is None else itens
+    d = {"gerado_por": f"{_m.NOME} {_m.VERSAO}", "gerado_em": datetime.datetime.now().isoformat(timespec="seconds"),
+         "grupo": grupo.nome, "periodo": {"de": est.a, "ate": est.b}}
+    if ficha_ is not None:
+        pf = ficha_["perfil"]
+        d["membro"] = {"id": ficha_["id"], "nome": ficha_["nome"], "categoria": ficha_["categoria"], "link": pf.get("link"),
+                       "fontes": pf.get("fontes"), "resumo": pf.get("resumo"), "formacao": pf.get("formacao"), "linhas": pf.get("linhas"),
+                       "areas": pf.get("areas"), "numeros": {r: v for r, v, _a in ficha_["numeros"]}}
+    else:
+        d["membros"] = [{"id": i, "nome": base.pessoas[i]["nome"], "categoria": (grupo.membro(i) or {}).get("categoria", ""),
+                         "fontes": base.pessoas[i].get("fontes"), "link": base.pessoas[i].get("link"),
+                         "contagens": {k: v for k, v in est.por_membro.get(i, {}).items() if v}} for i in sorted(est.sel) if i in base.pessoas]
+        d["totais"] = {k: est.n[k] for k in CATS if est.n[k]}
+        d["indicadores"] = [{"indicador": a, "valor": b, "detalhe": c} for a, b, c in indicadores(est, base, grupo)]
+        d["por_ano"] = {k: {str(y): v for y, v in sorted(c.items())} for k, c in est.por_ano.items() if c}
+        d["parcerias"] = [{"membros": [a, b], "trabalhos": v} for (a, b), v in est.pares.most_common()]
+    d["itens"] = [item_dict(it, q, base) for it, q in itens]
+    return d
+
+
 def tabela_de(est, base, itens):
-    cab = ["Tipo", "Ano", "Título", "Autores / pessoas", "Veículo", "DOI", "Membros do grupo"]
+    cab = ["Tipo", "Ano", "Título", "Autores / pessoas", "Veículo", "DOI", "Membros do grupo", "Fonte"]
     return cab, [[rotulo(it.cat), it.ano or "", it.titulo, it.pessoas, it.veiculo, it.doi,
-                  "; ".join(sorted(base.pessoas[p]["nome"] for p in q if p in base.pessoas))] for it, q in itens]
+                  "; ".join(sorted(base.pessoas[p]["nome"] for p in q if p in base.pessoas)), texto_fontes(it.fontes)] for it, q in itens]
 
 
 def rotulo(cat):
@@ -943,8 +1116,22 @@ def graficos(est, base, grupo):
         ("Artigos em periódicos", ["artigos"]), ("Trabalhos em eventos", ev), ("Livros e capítulos", ["livros", "capitulos"]),
         ("Outros", ["aceitos", "jornais", "outras_bib", "apresentacoes"])])))
     out.append((S, "artigos", "Artigos em periódicos por ano", colunas([("Artigos", ["artigos"])])))
+    grupos_pub = [("Artigos em periódicos", ["artigos"]), ("Trabalhos em eventos", ev), ("Livros e capítulos", ["livros", "capitulos"]),
+                  ("Outros", ["aceitos", "jornais", "outras_bib", "apresentacoes"])]
+    por = []
+    for i in est.sel:
+        if i in base.pessoas:
+            c = est.por_membro.get(i, {})
+            vals = [sum(c.get(x, 0) for x in cats) for _nm, cats in grupos_pub]
+            if sum(vals):
+                por.append((nome(i), vals, i))
+    por.sort(key=lambda x: (-sum(x[1]), norm(x[0])))
+    por = por[:20]
+    out.append((S, "membros", "Publicações por membro (20 primeiros)", {
+        "tipo": "barras_emp", "rotulos": [x[0] for x in por], "series": [(nm, [x[1][j] for x in por]) for j, (nm, _c) in enumerate(grupos_pub)],
+        "refs": [{"membro": x[2]} for x in por], "filtros": [{"cats": cats} for _nm, cats in grupos_pub]}))
     por = sorted(((nome(i), est.por_membro.get(i, {}).get("artigos", 0), i) for i in est.sel if i in base.pessoas), key=lambda x: (-x[1], norm(x[0])))
-    out.append((S, "membros", "Artigos por membro (15 primeiros)", barras([(n, v, {"cats": ["artigos"], "membro": i}) for n, v, i in por if v][:15])))
+    out.append((S, "artigos_membro", "Artigos por membro (15 primeiros)", barras([(n, v, {"cats": ["artigos"], "membro": i}) for n, v, i in por if v][:15])))
     out.append((S, "periodicos", "Periódicos mais frequentes", barras([(v, n, {"cats": ["artigos", "aceitos"], "veiculo": k})
                                                                       for v, n, k in veiculos_k(est, ["artigos", "aceitos"], 12)])))
     tipos = sorted([(rotulo(c), est.n[c], {"cats": [c]}) for c in BIB_CATS if est.n[c]], key=lambda x: -x[1])
@@ -1146,7 +1333,7 @@ def tabela_veiculos(est):
 
 
 def tabela_itens(est, base, cats=None, busca=""):
-    cab = ["Tipo", "Ano", "Título", "Autores / pessoas", "Veículo", "DOI", "Membros do grupo"]
+    cab = ["Tipo", "Ano", "Título", "Autores / pessoas", "Veículo", "DOI", "Membros do grupo", "Fonte"]
     termos = norm(busca).split()
     linhas = []
     for it, q in est.itens:
@@ -1157,7 +1344,7 @@ def tabela_itens(est, base, cats=None, busca=""):
             alvo = norm(" ".join((it.titulo, it.pessoas, it.veiculo, it.doi, nomes)))
             if not all(t in alvo for t in termos):
                 continue
-        linhas.append([rotulo(it.cat), it.ano or "", it.titulo, it.pessoas, it.veiculo, it.doi, nomes])
+        linhas.append([rotulo(it.cat), it.ano or "", it.titulo, it.pessoas, it.veiculo, it.doi, nomes, texto_fontes(it.fontes)])
     linhas.sort(key=lambda r: (-(r[1] or 0), list(CATS).index(next(k for k in CATS if CATS[k][0] == r[0])), norm(r[2])))
     return cab, linhas
 

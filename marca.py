@@ -95,6 +95,30 @@ def logo_imagem(tam, disco=MARINHO):
     return img.resize((tam, tam), Image.LANCZOS)
 
 
+def icone_imagem(tam):
+    """Icone para tamanhos pequenos (barra de tarefas, atalhos): quadrado
+    arredondado azul, arco branco grosso do mostrador, barras e o ponteiro
+    ambar largo. Le bem de 16 a 256 px, em fundo claro ou escuro."""
+    from PIL import Image, ImageDraw
+    k = 8
+    S = 100 * k
+    img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle((2 * k, 2 * k, 98 * k, 98 * k), radius=22 * k, fill=AZUL)
+    d.arc((16 * k, 16 * k, 84 * k, 84 * k), start=135, end=405, fill="#FFFFFF", width=9 * k)
+    for x, h, cor in ((31, 14, "#A9C8F2"), (43, 22, "#D6E5FA"), (55, 30, "#FFFFFF")):
+        d.rounded_rectangle((x * k, (78 - h) * k, (x + 9) * k, 78 * k), radius=2 * k, fill=cor)
+    ang = math.radians(-50)
+    px0, py0 = 47, 56
+    px1, py1 = px0 + 30 * math.cos(ang), py0 + 30 * math.sin(ang)
+    lw = 9 * k
+    d.line((px0 * k, py0 * k, px1 * k, py1 * k), fill=AMBAR, width=lw)
+    d.ellipse((px1 * k - lw / 2, py1 * k - lw / 2, px1 * k + lw / 2, py1 * k + lw / 2), fill=AMBAR)
+    d.ellipse(((px0 - 9) * k, (py0 - 9) * k, (px0 + 9) * k, (py0 + 9) * k), fill=AZUL)
+    d.ellipse(((px0 - 7) * k, (py0 - 7) * k, (px0 + 7) * k, (py0 + 7) * k), fill=AMBAR)
+    return img.resize((tam, tam), Image.LANCZOS)
+
+
 def gerar_arquivos():
     """marca/logo-*.png e marca/altimetro.ico (os PNG sao usados pela janela)."""
     os.makedirs(PASTA, exist_ok=True)
@@ -102,14 +126,19 @@ def gerar_arquivos():
         logo_imagem(t).save(os.path.join(PASTA, f"logo-{t}.png"))
     for t in (32, 48, 64):
         logo_imagem(t, AZUL).save(os.path.join(PASTA, f"logo-escuro-{t}.png"))
-    logo_imagem(256).save(os.path.join(PASTA, "altimetro.ico"), sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+    for t in (32, 64, 256):
+        icone_imagem(t).save(os.path.join(PASTA, f"icone-{t}.png"))
+    # .ico com cada tamanho desenhado a parte (fica nitido no 16 e no 24)
+    tams = [16, 24, 32, 48, 64, 128, 256]
+    icone_imagem(256).save(os.path.join(PASTA, "altimetro.ico"), sizes=[(t, t) for t in tams],
+                           append_images=[icone_imagem(t) for t in tams[:-1]])
     with open(os.path.join(PASTA, "logo.svg"), "w", encoding="utf-8") as f:
         f.write(logo_svg(512))
 
 
-def arquivo(tam, escuro=False):
-    """Caminho do PNG da logo no tamanho pedido (gera se faltar)."""
-    c = os.path.join(PASTA, f"logo-{'escuro-' if escuro else ''}{tam}.png")
+def arquivo(tam, escuro=False, icone=False):
+    """Caminho do PNG da logo (ou do icone) no tamanho pedido (gera se faltar)."""
+    c = os.path.join(PASTA, f"icone-{tam}.png" if icone else f"logo-{'escuro-' if escuro else ''}{tam}.png")
     if not os.path.exists(c):
         try:
             gerar_arquivos()

@@ -1,0 +1,15 @@
+# Dados de cada usuario (curriculos, fotos, relatorios): ficam so no computador
+grupos/
+preferencias.json
+*.tmp
+
+# Ambiente e caches do Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Sistema
+.DS_Store
+Thumbs.db
+desktop.ini

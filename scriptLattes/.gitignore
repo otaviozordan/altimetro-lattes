@@ -1,0 +1,20 @@
+chromedriver
+chromedriver-*.zip
+.chrome_version
+venv/
+env/
+**/__pycache__/
+*.py.bak
+*.pyc
+cache/
+exemplo/teste-01/
+exemplo/teste-02/
+exemplo/teste-03/
+exemplo/inct-IdoF/
+exemplo/ensp2024/
+exemplo/ensp2024-termos1/
+exemplo/ensp2024-termos2/
+
+# Arquivos temporários do Makefile
+chromedriver-temp.zip
+chromedriver-linux64/

@@ -1,0 +1,9 @@
+# Bibliotecas do Altimetro e do scriptLattes (instaladas pelo iniciar.py)
+beautifulsoup4>=4.12
+networkx>=3.0
+rapidfuzz>=3.0
+scipy>=1.10
+selenium>=4.11
+tqdm>=4.60
+openpyxl>=3.1
+Pillow>=9.2
